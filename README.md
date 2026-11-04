@@ -21,6 +21,13 @@ park a window on another desktop. SpaceKeeper fixes that.
 
 <p align="center"><img src="docs/preview.png" width="360" alt="Dock hover preview showing only this desktop's windows"></p>
 
+<p align="center">
+  <a href="https://github.com/techmalik/SpaceKeeper/releases/download/v1.0.0/SpaceKeeper-demo.mp4">
+    <img src="docs/demo-poster.png" width="640" alt="Watch the 90-second SpaceKeeper demo">
+  </a><br>
+  <b>▶ <a href="https://github.com/techmalik/SpaceKeeper/releases/download/v1.0.0/SpaceKeeper-demo.mp4">Watch the 90-second demo</a></b>
+</p>
+
 ## Features
 
 | | |
