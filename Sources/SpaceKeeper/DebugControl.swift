@@ -145,7 +145,15 @@ final class DebugControl {
             if parts.count == 2, let wid = UInt32(parts[1]) {
                 var n = 0
                 for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-                    if let w = Windows.ofApp(app).first(where: { $0.id == wid }) { Windows.close(w); n += 1 }
+                    if let w = Windows.ofApp(app).first(where: { $0.id == wid }) {
+                        Windows.close(w); n += 1
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        for sheet in AX.elements(w.ax, kAXChildrenAttribute) where AX.string(sheet, kAXRoleAttribute) == "AXSheet" {
+                            for b in AX.elements(sheet, kAXChildrenAttribute) where ["Delete", "Don\u{2019}t Save", "Don't Save"].contains(AX.string(b, kAXTitleAttribute) ?? "") {
+                                AXUIElementPerformAction(b, kAXPressAction as CFString)
+                            }
+                        }
+                    }
                 }
                 out = "closed \(n)"
             }
@@ -173,6 +181,33 @@ final class DebugControl {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 post(.leftMouseUp, x + dx)
                 out = "dragged \(dx)px"
+            }
+        case "glide":     // glide <x> <y> <seconds>: move the pointer smoothly (for demos)
+            if parts.count == 4, let x = Double(parts[1]), let y = Double(parts[2]), let secs = Double(parts[3]) {
+                let start = CGEvent(source: nil)?.location ?? .zero
+                let steps = max(20, Int(secs * 60))
+                for i in 1...steps {
+                    let t = Double(i) / Double(steps)
+                    let e = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+                    let p = CGPoint(x: start.x + (x - start.x) * e, y: start.y + (y - start.y) * e)
+                    CGWarpMouseCursorPosition(p)
+                    let ev = CGEvent(mouseEventSource: CGEventSource(stateID: .hidSystemState), mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)
+                    ev?.flags = []
+                    ev?.post(tap: .cghidEventTap)
+                    try? await Task.sleep(nanoseconds: UInt64(secs / Double(steps) * 1_000_000_000))
+                }
+                out = "glided"
+            }
+        case "settext":   // settext <text...>: set the text of the front app's focused window (demo only)
+            if let app = NSWorkspace.shared.frontmostApplication, let win = Windows.focused(of: app) {
+                func area(_ el: AXUIElement, _ depth: Int) -> AXUIElement? {
+                    if AX.string(el, kAXRoleAttribute) == "AXTextArea" { return el }
+                    guard depth > 0 else { return nil }
+                    for c in AX.elements(el, kAXChildrenAttribute) { if let f = area(c, depth - 1) { return f } }
+                    return nil
+                }
+                let text = parts.dropFirst().joined(separator: " ")
+                out = area(win, 5).map { AX.set($0, kAXValueAttribute, text as CFString) ? "set" : "failed" } ?? "no text area"
             }
         case "switch":    // switch <steps>
             await WindowMover.shared.switchSpaces(by: Int(parts.dropFirst().first ?? "0") ?? 0)

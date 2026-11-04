@@ -137,6 +137,7 @@ enum Windows {
                           AX.bool(item, kAXEnabledAttribute) ?? true else { continue }
                     if title == "New Window" { candidates.append((0, item)) }
                     else if title.hasPrefix("New") && title.hasSuffix("Window") { candidates.append((1, item)) }
+                    else if title == "New" || title == "New Document" { candidates.append((2, item)) }   // document apps, e.g. TextEdit
                 }
             }
         }
