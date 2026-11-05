@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.2
 
 **Fixes**
 - A failed or partly interrupted window move no longer leaves you on another desktop: SpaceKeeper returns to where you
