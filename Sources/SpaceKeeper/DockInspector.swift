@@ -33,10 +33,22 @@ final class DockInspector {
         }
     }
 
-    /// Cheap pre-check so we don't query Accessibility on every mouse move.
+    /// Cheap pre-check so we don't query Accessibility on every poll. With Dock magnification the hovered icon
+    /// grows well beyond the Dock strip, so the region reaches out by the magnification amount.
     func isNearDock(_ p: CGPoint) -> Bool {
         refresh()
-        return listFrame.insetBy(dx: -8, dy: -8).contains(p)
+        let d = UserDefaults(suiteName: "com.apple.dock")
+        let tile = d?.double(forKey: "tilesize") ?? 0
+        let large = d?.double(forKey: "largesize") ?? 0
+        let extra = (d?.bool(forKey: "magnification") ?? false) ? max((large > 0 ? large : 128) - (tile > 0 ? tile : 64), 0) : 0
+        var r = listFrame.insetBy(dx: -8, dy: -8)
+        let reach = extra + 16
+        switch orientation {
+        case .bottom: r.origin.y -= reach; r.size.height += reach
+        case .left:   r.size.width += reach
+        case .right:  r.origin.x -= reach; r.size.width += reach
+        }
+        return r.contains(p)
     }
 
     func item(at p: CGPoint) -> DockItem? {

@@ -36,7 +36,7 @@ park a window on another desktop. SpaceKeeper fixes that.
 | **Per-desktop Dock previews** | Hover an app in the Dock and see live thumbnails of *only that app's windows on the current desktop* (minimized ones too). Hover a thumbnail for **close** and **minimize** buttons; click it to bring the window forward. |
 | **Click the Dock icon to minimize** | Click the icon of the frontmost app and its windows on this desktop minimize. Click again and they come back. |
 | **No more desktop-jumping** | Click an app that has no window on this desktop and SpaceKeeper opens a new window *right here* instead of pulling you to another desktop. Minimized windows are restored in place. |
-| **Stays out of your way** | Lives in the menu bar, no Dock icon, no network access, no telemetry. Dragging Dock icons to reorder still works. |
+| **Stays out of your way** | Lives in the menu bar, no Dock icon, no telemetry. The only network use is the optional in-app feedback form, and only when you press Send. Dragging Dock icons to reorder still works. |
 
 ## Install
 
@@ -60,6 +60,7 @@ Prefer to build it yourself? See [Build from source](#build-from-source).
 | **Screen Recording** *(for previews)* | Draw the live window thumbnails. Without it you still get previews, just with app icons instead of content. | System Settings → Privacy & Security → Screen Recording |
 
 SpaceKeeper never records, stores or sends your screen. Thumbnails are drawn in memory and discarded.
+The feedback form sends your message (and a screenshot, if you attach one) only when you press **Send**.
 
 ### Recommended setting
 
@@ -74,6 +75,7 @@ SpaceKeeper's Dock handling works either way, but turning this off makes everyth
 - **Previews:** just hover an app in the Dock.
 - **Minimize / restore / new window:** click the app's Dock icon.
 - Everything can be switched on or off from the menu-bar icon. **About SpaceKeeper** has the version and contact details.
+- **Send Feedback…** opens a small form: type your message, optionally take or attach a screenshot, press Send, and it arrives in the author's inbox.
 
 ## How moving windows works
 
@@ -100,6 +102,7 @@ This relies on Mission Control's **Move left/right a space** shortcuts being ena
 
 - **Nothing happens / hotkeys do nothing:** check *Accessibility* is on for SpaceKeeper, then quit and reopen it.
 - **"⚠︎" appears in the menu bar after a move:** the menu shows the reason (e.g. another window covers the title bar).
+- **Hover card doesn't appear:** make sure *Dock hover previews* is ticked in the menu and Accessibility is granted. On a desktop where the app has no windows the card says "No windows on this desktop".
 - **Duplicate preview cards:** another Dock-preview tool (iDock, DockDoor…) is running; the menu offers to quit it.
 - **Permissions reset after an update:** remove SpaceKeeper from the Accessibility list, add it back, relaunch.
 

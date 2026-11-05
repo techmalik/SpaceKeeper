@@ -34,6 +34,11 @@ struct PreviewView: View {
                 Text("· this desktop").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4)
+            if model.items.isEmpty {
+                Text("No windows on this desktop")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 4).padding(.bottom, 2)
+            }
             HStack(spacing: 10) {
                 ForEach(model.items) { item in
                     Card(item: item, icon: model.icon, hover: model.hovered == item.id,
@@ -101,52 +106,108 @@ struct PreviewView: View {
 // MARK: - Controller
 
 /// Shows a thumbnail card above a Dock icon, listing only that app's windows on the current desktop.
+///
+/// Driven by a 12 Hz poll of the pointer rather than by mouse-moved events: events can be dropped or arrive
+/// just before the pointer settles, a single failed Dock lookup must not cancel a pending card, and a poll
+/// makes "pointer rests on an icon for 0.3 s" trivial to express.
 final class DockPreviewController {
     private let model = PreviewModel()
     private var panel: NSPanel?
-    private var monitor: Any?
-    private var showTimer: Timer?
-    private var hideTimer: Timer?
-    private var watchTimer: Timer?
-    private var hovered: DockItem?
-    private var lastMove = Date.distantPast
+    private var clickMonitor: Any?
+    private var pollTimer: Timer?
+
+    private var hovered: DockItem?                 // item the visible card belongs to (geometry for hit-testing)
     private var shownPID: pid_t = 0
     private var shownApp: NSRunningApplication?
+
+    private var pendingPID: pid_t = 0              // icon the pointer is resting on, waiting for the delay
+    private var pendingSince = Date.distantPast
+    private var misses = 0                         // consecutive failed Dock lookups while "near" the Dock
+    private var hideSince: Date?
+    private var suppressFrom: CGPoint?             // after a click, stay quiet until the pointer moves
     var debugPinned = false
 
     func start() {
-        guard monitor == nil else { return }
+        guard pollTimer == nil else { return }
         model.onSelect = { [weak self] id in self?.select(id) }
         model.onClose = { [weak self] id in self?.close(id) }
         model.onMinimize = { [weak self] id in self?.minimize(id) }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown]) { [weak self] e in
-            self?.mouse(e)
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.dismiss()
         }
+        let t = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in self?.poll() }
+        RunLoop.main.add(t, forMode: .common)       // .common: keeps firing while menus or drags are tracking
+        pollTimer = t
     }
 
     func stop() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
+        pollTimer?.invalidate(); pollTimer = nil
         hide()
     }
 
-    private func mouse(_ e: NSEvent) {
-        guard Prefs.previewsEnabled else { hide(); return }
-        if e.type != .mouseMoved { hide(); return }                    // any click dismisses
-        let now = Date()
-        guard now.timeIntervalSince(lastMove) > 0.04 else { return }
-        lastMove = now
+    /// Hide the card and stay quiet until the pointer actually moves (used after any click on the Dock).
+    func dismiss() {
+        suppressFrom = CGEvent(source: nil)?.location
+        hide()
+    }
+
+    // MARK: Polling
+
+    private func poll() {
+        guard Prefs.previewsEnabled else { if panel?.isVisible == true { hide() }; return }
         let p = CGEvent(source: nil)?.location ?? .zero
-        if DockInspector.shared.isNearDock(p), let item = DockInspector.shared.item(at: p) {
-            hovered = item
-            hideTimer?.invalidate(); hideTimer = nil
-            if item.app.processIdentifier == shownPID && panel?.isVisible == true { return }
-            showTimer?.invalidate()
-            let delay = panel?.isVisible == true ? 0.05 : 0.3
-            showTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in self?.show(item) }
+        if let from = suppressFrom {
+            if hypot(p.x - from.x, p.y - from.y) < 4 { return }
+            suppressFrom = nil
+        }
+
+        let near = DockInspector.shared.isNearDock(p)
+        let item = near ? DockInspector.shared.item(at: p) : nil
+        let visible = panel?.isVisible == true
+
+        if visible {
+            if let item, item.app.processIdentifier != shownPID {
+                consider(item, delay: 0.08)                      // moved to another icon: switch quickly
+            } else {
+                pendingPID = 0
+            }
+            keepOrHide(over: item)
+            return
+        }
+
+        if let item {
+            misses = 0
+            consider(item, delay: 0.3)
         } else {
-            showTimer?.invalidate(); showTimer = nil
-            if panel?.isVisible != true { hovered = nil }
+            misses += 1
+            if !near || misses >= 3 { pendingPID = 0 }          // one flaky lookup must not cancel a pending card
+        }
+    }
+
+    private func consider(_ item: DockItem, delay: TimeInterval) {
+        let pid = item.app.processIdentifier
+        if pendingPID != pid {
+            pendingPID = pid
+            pendingSince = Date()
+        } else if Date().timeIntervalSince(pendingSince) >= delay {
+            pendingPID = 0
+            show(item)
+        }
+    }
+
+    /// Keep the card while the pointer is on its icon, on the card, or in the gap between them.
+    private func keepOrHide(over item: DockItem?) {
+        guard !debugPinned, let panel, let shown = hovered else { return }
+        let onIcon = item?.app.processIdentifier == shownPID
+        let region = panel.frame.union(shown.frame.cocoaRect).insetBy(dx: -4, dy: -4)
+        if onIcon || region.contains(NSEvent.mouseLocation) {
+            hideSince = nil
+        } else if let since = hideSince {
+            if Date().timeIntervalSince(since) > 0.25 { hide() }
+        } else {
+            hideSince = Date()
         }
     }
 
@@ -156,12 +217,14 @@ final class DockPreviewController {
         return "show(\(item.app.localizedName ?? "?")): windows=\(Windows.ofApp(item.app).count) panelVisible=\(panel?.isVisible ?? false) frame=\(panel?.frame ?? .zero)"
     }
 
+    // MARK: Showing
+
     private func show(_ item: DockItem) {
         let wins = Windows.ofApp(item.app)
-        guard !wins.isEmpty else { hide(); return }
         shownPID = item.app.processIdentifier
         shownApp = item.app
         hovered = item
+        hideSince = nil
         let name = item.app.localizedName ?? item.title
         model.appName = name
         model.icon = item.app.icon ?? NSImage()
@@ -171,7 +234,7 @@ final class DockPreviewController {
         let panel = ensurePanel()
         position(panel, for: item)
         panel.orderFrontRegardless()
-        startWatching()
+        guard !wins.isEmpty else { return }
 
         Task { @MainActor in
             let fresh = await Thumbnails.shared.refresh(wins)
@@ -216,27 +279,13 @@ final class DockPreviewController {
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
     }
 
-    /// Hide shortly after the mouse leaves both the Dock icon and the card (and the gap between).
-    private func startWatching() {
-        watchTimer?.invalidate()
-        watchTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, !self.debugPinned, let panel = self.panel, panel.isVisible, let item = self.hovered else { return }
-            let region = panel.frame.union(item.frame.cocoaRect).insetBy(dx: -4, dy: -4)
-            if region.contains(NSEvent.mouseLocation) {
-                self.hideTimer?.invalidate(); self.hideTimer = nil
-            } else if self.hideTimer == nil {
-                self.hideTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in self?.hide() }
-            }
-        }
-    }
-
     func hide() {
-        showTimer?.invalidate(); hideTimer?.invalidate(); watchTimer?.invalidate()
-        showTimer = nil; hideTimer = nil; watchTimer = nil
         panel?.orderOut(nil)
         shownPID = 0
         shownApp = nil
         hovered = nil
+        pendingPID = 0
+        hideSince = nil
     }
 
     // MARK: Actions
@@ -248,7 +297,7 @@ final class DockPreviewController {
 
     private func select(_ id: CGWindowID) {
         guard let (w, app) = window(id) else { return }
-        hide()
+        dismiss()
         Windows.focus(w, app: app)
     }
 
@@ -263,6 +312,6 @@ final class DockPreviewController {
         guard let (w, _) = window(id) else { return }
         Windows.close(w)
         model.items.removeAll { $0.id == id }
-        if model.items.isEmpty { hide() } else if let panel, let item = hovered { position(panel, for: item) }
+        if let panel, let item = hovered { position(panel, for: item) }      // an empty card says "No windows on this desktop"
     }
 }

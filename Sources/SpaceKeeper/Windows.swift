@@ -98,6 +98,22 @@ enum Windows {
         }
     }
 
+    /// True if the window server shows a real, visible window of the app on this desktop. Used as a safety net
+    /// when Accessibility returns nothing (a busy app, or one that hides its windows from AX).
+    static func hasVisibleWindowHere(_ app: NSRunningApplication) -> Bool {
+        let current = Spaces.currentIDs()
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        for w in list {
+            guard (w[kCGWindowOwnerPID as String] as? Int) == Int(app.processIdentifier),
+                  (w[kCGWindowLayer as String] as? Int) == 0,
+                  let id = w[kCGWindowNumber as String] as? Int,
+                  let d = w[kCGWindowBounds as String] as? NSDictionary,
+                  let b = CGRect(dictionaryRepresentation: d), b.width >= 120, b.height >= 80 else { continue }
+            if !current.isDisjoint(with: Spaces.spaces(of: CGWindowID(id))) { return true }
+        }
+        return false
+    }
+
     /// True if the app has a real-looking window on a desktop that isn't currently visible.
     static func hasWindowsElsewhere(_ app: NSRunningApplication) -> Bool {
         let current = Spaces.currentIDs()

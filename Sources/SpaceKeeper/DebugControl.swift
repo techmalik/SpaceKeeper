@@ -165,6 +165,15 @@ final class DebugControl {
                 ws.forEach { AX.set($0.ax, kAXMinimizedAttribute, kCFBooleanFalse) }
                 out = "unminimized \(ws.count)"
             }
+        case "feedback":
+            FeedbackWindowController.shared.show(); out = "feedback window shown"
+        case "feedbacksend":   // feedbacksend <text...>: send through the real code path (with a generated screenshot)
+            let img = NSImage(size: NSSize(width: 2400, height: 1400), flipped: false) { r in NSColor.systemTeal.setFill(); r.fill(); return true }
+            do {
+                try await FeedbackSender.send(kind: .bug, message: parts.dropFirst().joined(separator: " "), replyTo: "tester@example.com",
+                                              includeSystemInfo: true, screenshot: FeedbackSender.jpegData(from: img))
+                out = "sent OK"
+            } catch { out = "FAILED: \(error.localizedDescription)" }
         case "about":
             AboutWindowController.shared.show(); out = "about shown"
         case "dockdrag":  // dockdrag <x> <y> <dx>: press on a Dock icon, drag dx px horizontally, release
@@ -208,6 +217,31 @@ final class DebugControl {
                 }
                 let text = parts.dropFirst().joined(separator: " ")
                 out = area(win, 5).map { AX.set($0, kAXValueAttribute, text as CFString) ? "set" : "failed" } ?? "no text area"
+            }
+        case "audit":     // compare Accessibility's window list with the window server's, per app, on this desktop
+            let cur = Spaces.currentIDs()
+            guard let all = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { break }
+            for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+                let cg = all.filter { w in
+                    guard (w[kCGWindowOwnerPID as String] as? Int) == Int(app.processIdentifier), (w[kCGWindowLayer as String] as? Int) == 0,
+                          let id = w[kCGWindowNumber as String] as? Int,
+                          let d = w[kCGWindowBounds as String] as? NSDictionary, let b = CGRect(dictionaryRepresentation: d), b.width >= 120, b.height >= 80 else { return false }
+                    return !cur.isDisjoint(with: Spaces.spaces(of: CGWindowID(id)))
+                }
+                let el = AXUIElementCreateApplication(app.processIdentifier)
+                let axAll = AX.elements(el, kAXWindowsAttribute)
+                let subs = axAll.map { "\(AX.string($0, kAXSubroleAttribute) ?? "nil")" }
+                let mine = Windows.ofApp(app).count
+                let flag = (cg.count != mine) ? "  <-- MISMATCH" : ""
+                if cg.count != mine {
+                    for w in cg {
+                        let id = w[kCGWindowNumber as String] as? Int ?? 0
+                        let b = (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) } ?? .zero
+                        let inAX = axAll.contains { AX.windowID($0) == CGWindowID(id) }
+                        out += "    cg wid=\(id) \(Int(b.width))x\(Int(b.height)) onscreen=\(w[kCGWindowIsOnscreen as String] ?? false) alpha=\(w[kCGWindowAlpha as String] ?? "?") inAX=\(inAX) title=\"\((w[kCGWindowName as String] as? String) ?? "")\"\n"
+                    }
+                }
+                if !cg.isEmpty || mine > 0 { out += "\(app.localizedName ?? "?"): windowServer=\(cg.count) ours=\(mine) ax=\(axAll.count) subroles=\(subs)\(flag)\n" }
             }
         case "switch":    // switch <steps>
             await WindowMover.shared.switchSpaces(by: Int(parts.dropFirst().first ?? "0") ?? 0)

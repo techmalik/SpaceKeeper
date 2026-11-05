@@ -28,7 +28,7 @@ private struct AboutView: View {
             }
 
             HStack(spacing: 8) {
-                Button("Send Feedback") { NSWorkspace.shared.open(AppInfo.feedbackURL) }
+                Button("Send Feedback") { FeedbackWindowController.shared.show() }
                 Button("GitHub") { NSWorkspace.shared.open(AppInfo.repo) }
                 Button("Report an Issue") { NSWorkspace.shared.open(AppInfo.issues) }
             }

@@ -6,7 +6,11 @@ import ApplicationServices
 ///  • app whose windows here are all minimized → restore them (no jump to another desktop)
 ///  • app with no window on this desktop → open a new window right here (no jump)
 ///  • app not frontmost, windows here and elsewhere → raise the ones here (no jump)
-/// Everything else (not running, no "New Window" menu, modifier-clicks, drags) is left to the Dock.
+/// Anything else is handed back to the Dock by re-sending the click.
+///
+/// Design note: the event-tap callback must return quickly or macOS disables the tap (and the click then falls
+/// through to the stock behavior, including the jump to another desktop). So the callback only does a cheap
+/// Dock hit-test and swallows the click; all the slow Accessibility work happens afterwards, on mouse-up.
 final class DockClickMinimizer {
     private enum Action {
         case minimize([Win])
@@ -22,7 +26,10 @@ final class DockClickMinimizer {
     private var source: CFRunLoopSource?
     private var swallowing = false
     private var pressPoint = CGPoint.zero
-    private var pending: Action?
+    private var pressedApp: NSRunningApplication?
+
+    /// Called whenever we handle a click ourselves (the preview card should disappear).
+    var onHandled: () -> Void = {}
 
     var isRunning: Bool { tap != nil }
 
@@ -48,8 +55,10 @@ final class DockClickMinimizer {
     func stop() {
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }
-        tap = nil; source = nil; swallowing = false; pending = nil
+        tap = nil; source = nil; swallowing = false; pressedApp = nil
     }
+
+    // MARK: Event tap (must stay fast)
 
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
@@ -57,47 +66,54 @@ final class DockClickMinimizer {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if swallowing { swallowing = false; replayClick(at: pressPoint, up: true) }      // never leave a half-click
             return pass
 
         case .leftMouseDown:
             swallowing = false
-            pending = nil
+            pressedApp = nil
             let plain = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift]).isEmpty
             let p = event.location
             guard plain, DockInspector.shared.isNearDock(p), let item = DockInspector.shared.item(at: p) else { return pass }
-            guard let action = decide(for: item.app) else { return pass }
             swallowing = true
             pressPoint = p
-            pending = action
+            pressedApp = item.app
             return nil
 
         case .leftMouseDragged:
             // The user is dragging the icon (reordering): replay the swallowed press, then this drag, and step aside.
             if swallowing, hypot(event.location.x - pressPoint.x, event.location.y - pressPoint.y) > 5 {
                 swallowing = false
-                pending = nil
-                dbg("drag detected -> replaying press so the Dock can reorder")
-                for (t, loc) in [(CGEventType.leftMouseDown, pressPoint), (.leftMouseDragged, event.location)] {
-                    let e = CGEvent(mouseEventSource: CGEventSource(stateID: .hidSystemState), mouseType: t, mouseCursorPosition: loc, mouseButton: .left)
-                    e?.setIntegerValueField(.eventSourceUserData, value: Self.marker)
-                    e?.setIntegerValueField(.mouseEventClickState, value: 1)
-                    e?.flags = []
-                    e?.post(tap: .cghidEventTap)
-                }
+                pressedApp = nil
+                post(.leftMouseDown, at: pressPoint)
+                post(.leftMouseDragged, at: event.location)
                 return nil
             }
             return swallowing ? nil : pass
 
         case .leftMouseUp:
-            guard swallowing, let action = pending else { swallowing = false; return pass }
+            guard swallowing, let app = pressedApp else { swallowing = false; return pass }
             swallowing = false
-            pending = nil
-            DispatchQueue.main.async { self.perform(action) }
+            pressedApp = nil
+            let p = pressPoint
+            DispatchQueue.main.async { self.resolve(app, at: p) }
             return nil
 
         default:
             return pass
         }
+    }
+
+    // MARK: Decision (slow work is fine here)
+
+    private func resolve(_ app: NSRunningApplication, at point: CGPoint) {
+        guard let action = decide(for: app) else {
+            dbg("\(app.localizedName ?? "?"): not handled -> click handed back to the Dock")
+            replayClick(at: point, up: true)
+            return
+        }
+        onHandled()
+        perform(action, app: app, point: point)
     }
 
     private func decide(for app: NSRunningApplication) -> Action? {
@@ -116,6 +132,8 @@ final class DockClickMinimizer {
             return .restore(app, here)
         }
         if here.isEmpty {
+            // Accessibility says "no windows" — double-check with the window server before opening another one.
+            if Windows.hasVisibleWindowHere(app) { dbg("\(name): AX empty but window server sees a window -> native"); return nil }
             guard Prefs.openNewWindowHere, let item = Windows.newWindowItem(of: app) else {
                 dbg("\(name): nothing here, no New Window item -> native")
                 return nil
@@ -130,7 +148,7 @@ final class DockClickMinimizer {
         return nil
     }
 
-    private func perform(_ action: Action) {
+    private func perform(_ action: Action, app: NSRunningApplication, point: CGPoint) {
         switch action {
         case .minimize(let ws):
             ws.forEach(Windows.minimize)
@@ -141,7 +159,35 @@ final class DockClickMinimizer {
             Windows.bringForward(app, ws)
         case .newWindow(let app, let item):
             AXUIElementPerformAction(item, kAXPressAction as CFString)
-            Windows.bringForward(app, [])
+            // Activate only once the new window exists on this desktop. Activating earlier lets macOS pick one of
+            // the app's windows on another desktop and jump there.
+            waitForWindow(of: app, tries: 25) { wins in
+                if let wins { Windows.bringForward(app, wins) }
+                else { dbg("\(app.localizedName ?? "?"): no window appeared -> click handed back to the Dock"); self.replayClick(at: point, up: true) }
+            }
         }
+    }
+
+    private func waitForWindow(of app: NSRunningApplication, tries: Int, _ done: @escaping ([Win]?) -> Void) {
+        let wins = Windows.ofApp(app).filter { !$0.minimized }
+        if !wins.isEmpty { done(wins); return }
+        guard tries > 0 else { done(nil); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { self.waitForWindow(of: app, tries: tries - 1, done) }
+    }
+
+    // MARK: Synthetic events (tagged so the tap ignores them)
+
+    private func post(_ type: CGEventType, at p: CGPoint) {
+        let e = CGEvent(mouseEventSource: CGEventSource(stateID: .hidSystemState), mouseType: type, mouseCursorPosition: p, mouseButton: .left)
+        e?.setIntegerValueField(.eventSourceUserData, value: Self.marker)
+        e?.setIntegerValueField(.mouseEventClickState, value: 1)
+        e?.flags = []
+        e?.post(tap: .cghidEventTap)
+    }
+
+    /// Hand a click back to the Dock exactly as the user made it.
+    private func replayClick(at p: CGPoint, up: Bool) {
+        post(.leftMouseDown, at: p)
+        if up { DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { self.post(.leftMouseUp, at: p) } }
     }
 }

@@ -14,6 +14,14 @@ enum AppInfo {
     static let issues = URL(string: "https://github.com/techmalik/SpaceKeeper/issues")!
     static let releases = URL(string: "https://github.com/techmalik/SpaceKeeper/releases")!
 
+    /// Where in-app feedback is delivered (an email-forwarding form service; no account or server needed).
+    /// The first message sent to this address makes the service email the owner a one-time activation link.
+    static var feedbackEndpoint: URL {
+        // Test hook: only honored when the debug channel is enabled.
+        if Prefs.debugControl, let o = UserDefaults.standard.string(forKey: "feedbackEndpointOverride"), let u = URL(string: o) { return u }
+        return URL(string: "https://formsubmit.co/\(email)")!
+    }
+
     static var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev" }
     static var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0" }
 

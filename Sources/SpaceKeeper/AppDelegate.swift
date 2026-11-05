@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startServicesIfPermitted() {
         guard AXIsProcessTrusted() else { return }
         preview.start()
+        clicker.onHandled = { [weak self] in self?.preview.dismiss() }
         clicker.start()
     }
 
@@ -193,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func quitOther(_ s: NSMenuItem) { (s.representedObject as? NSRunningApplication)?.terminate() }
     @objc private func showAbout() { AboutWindowController.shared.show() }
-    @objc private func sendFeedback() { NSWorkspace.shared.open(AppInfo.feedbackURL) }
+    @objc private func sendFeedback() { FeedbackWindowController.shared.show() }
     @objc private func openGitHub() { NSWorkspace.shared.open(AppInfo.repo) }
     @objc private func checkUpdates() { NSWorkspace.shared.open(AppInfo.releases) }
 
