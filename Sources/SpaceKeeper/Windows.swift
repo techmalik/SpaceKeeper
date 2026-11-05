@@ -78,7 +78,10 @@ enum Windows {
         AXUIElementSetMessagingTimeout(el, 0.5)
         return AX.element(el, kAXFocusedWindowAttribute)
             ?? AX.element(el, kAXMainWindowAttribute)
-            ?? AX.elements(el, kAXWindowsAttribute).first
+            // Last resort: a real, non-minimized window (not a palette, sheet or minimized window).
+            ?? AX.elements(el, kAXWindowsAttribute).first {
+                AX.string($0, kAXSubroleAttribute) == kAXStandardWindowSubrole && AX.bool($0, kAXMinimizedAttribute) != true
+            }
     }
 
     static func focus(_ w: Win, app: NSRunningApplication) {
@@ -106,6 +109,7 @@ enum Windows {
         for w in list {
             guard (w[kCGWindowOwnerPID as String] as? Int) == Int(app.processIdentifier),
                   (w[kCGWindowLayer as String] as? Int) == 0,
+                  ((w[kCGWindowAlpha as String] as? Double) ?? 1) > 0,          // invisible overlay windows don't count
                   let id = w[kCGWindowNumber as String] as? Int,
                   let d = w[kCGWindowBounds as String] as? NSDictionary,
                   let b = CGRect(dictionaryRepresentation: d), b.width >= 120, b.height >= 80 else { continue }
@@ -151,12 +155,35 @@ enum Windows {
                 for item in AX.elements(menu, kAXChildrenAttribute) {
                     guard let title = AX.string(item, kAXTitleAttribute),
                           AX.bool(item, kAXEnabledAttribute) ?? true else { continue }
-                    if title == "New Window" { candidates.append((0, item)) }
-                    else if title.hasPrefix("New") && title.hasSuffix("Window") { candidates.append((1, item)) }
-                    else if title == "New" || title == "New Document" { candidates.append((2, item)) }   // document apps, e.g. TextEdit
+                    let submenu = AX.elements(item, kAXChildrenAttribute).first
+                    let cmdChar = AX.string(item, kAXMenuItemCmdCharAttribute)
+                    let cmdMods = (AX.value(item, kAXMenuItemCmdModifiersAttribute) as? NSNumber)?.intValue
+                    guard let rank = newWindowRank(title: title, hasSubmenu: submenu != nil, cmdChar: cmdChar, cmdModifiers: cmdMods)
+                    else { continue }
+                    if let submenu {
+                        // e.g. Terminal's Shell › New Window › <profiles>: pressing the parent does nothing,
+                        // so use the submenu's first enabled entry (the default profile).
+                        guard let first = AX.elements(submenu, kAXChildrenAttribute).first(where: {
+                            !(AX.string($0, kAXTitleAttribute) ?? "").isEmpty && (AX.bool($0, kAXEnabledAttribute) ?? true)
+                        }) else { continue }
+                        candidates.append((rank, first))
+                    } else {
+                        candidates.append((rank, item))
+                    }
                 }
             }
         }
         return candidates.min(by: { $0.rank < $1.rank })?.item
+    }
+
+    /// How good a menu item is as a "new window here" action (lower is better), or nil if it isn't one.
+    /// A plain ⌘N item is the language-independent fallback for apps whose menus aren't in English.
+    static func newWindowRank(title: String, hasSubmenu: Bool, cmdChar: String?, cmdModifiers: Int?) -> Int? {
+        if title == "New Window" { return 0 }
+        if title.hasPrefix("New") && title.hasSuffix("Window") { return 1 }
+        // "New" as a submenu (Xcode's File › New) leads to template pickers, not a window: skip it.
+        if !hasSubmenu && (title == "New" || title == "New Document") { return 2 }   // document apps, e.g. TextEdit
+        if !hasSubmenu, cmdChar?.uppercased() == "N", cmdModifiers == 0 { return 3 }  // kAXMenuItemModifierNone = ⌘ only
+        return nil
     }
 }

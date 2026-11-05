@@ -68,7 +68,7 @@ final class DockClickMinimizer {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            if swallowing { swallowing = false; replayClick(at: pressPoint, up: true) }      // never leave a half-click
+            if swallowing { swallowing = false; pressedApp = nil; replayClick(at: pressPoint, up: true) }  // never leave a half-click
             return pass
 
         case .leftMouseDown:

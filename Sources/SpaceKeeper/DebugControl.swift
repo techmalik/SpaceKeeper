@@ -32,7 +32,7 @@ final class DebugControl {
 
     @MainActor
     private func run() async {
-        let cmd = ((try? String(contentsOf: dir.appendingPathComponent("cmd.txt"))) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cmd = ((try? String(contentsOf: dir.appendingPathComponent("cmd.txt"), encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = cmd.split(separator: " ").map(String.init)
         var out = ""
         switch parts.first ?? "" {
@@ -78,7 +78,8 @@ final class DebugControl {
             out += "frame before: \(before)\ngrab: \(g) role: \(hit.flatMap { AX.string($0, kAXRoleAttribute) } ?? "nil")\n"
             if let wl = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
                 let tops = wl.filter { w in
-                    guard (w[kCGWindowLayer as String] as? Int) == 0, let b = CGRect(dictionaryRepresentation: w[kCGWindowBounds as String] as! CFDictionary) else { return false }
+                    guard (w[kCGWindowLayer as String] as? Int) == 0, let d = w[kCGWindowBounds as String] as? NSDictionary,
+                          let b = CGRect(dictionaryRepresentation: d) else { return false }
                     return b.contains(g)
                 }.prefix(3).map { "\($0[kCGWindowOwnerName as String] ?? "?")#\($0[kCGWindowNumber as String] ?? 0)" }
                 out += "windows at grab (front first): \(tops)\n"
@@ -177,7 +178,8 @@ final class DebugControl {
         case "about":
             AboutWindowController.shared.show(); out = "about shown"
         case "dockdrag":  // dockdrag <x> <y> <dx>: press on a Dock icon, drag dx px horizontally, release
-            if parts.count == 4, let x = Double(parts[1]), let y = Double(parts[2]), let dx = Double(parts[3]) {
+            if parts.count == 4, let x = Double(parts[1]), let y = Double(parts[2]), let dx = Double(parts[3]),
+               x.isFinite, y.isFinite, dx.isFinite, abs(dx) <= 10_000 {
                 func post(_ t: CGEventType, _ px: Double) {
                     let e = CGEvent(mouseEventSource: CGEventSource(stateID: .hidSystemState), mouseType: t, mouseCursorPosition: CGPoint(x: px, y: y), mouseButton: .left)
                     e?.flags = []

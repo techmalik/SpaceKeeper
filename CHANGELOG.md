@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+**Fixes**
+- A failed or partly interrupted window move no longer leaves you on another desktop: SpaceKeeper returns to where you
+  were, counting from the desktop actually showing instead of the planned number of steps.
+- Multiple displays: the trip back after a move now happens on the window's display (the pointer stays there until
+  the end), not on whichever display the pointer started on.
+- Full-screen and minimized windows get a clear message instead of "That desktop doesn't exist" / "covered".
+- Dock clicks on Terminal (and other apps whose "New Window" is a submenu) open a window here instead of waiting two
+  seconds and jumping away. Xcode's File › New submenu is no longer mistaken for a new-window command.
+- Apps with non-English menus now open a window here too (falls back to the app's plain ⌘N item).
+- Invisible (zero-alpha) windows no longer count as "covering" the window or as a window on this desktop.
+- Before the Dock's frame is known, the top-left corner of the screen is no longer treated as the Dock.
+- Dock settings are read once a second instead of on every poll and click.
+- The preview card stays clear of the menu bar, and refreshes until a closed window is really gone.
+- Menu items that should be disabled (current desktop, granted permissions) are disabled.
+- A second move warning in the menu bar is no longer cleared early by the first one's timer.
+- Debug channel: no crash on a window without bounds; non-finite drag distances are rejected.
+
 ## 1.0.1
 
 **Fixes**

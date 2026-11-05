@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var tick: Timer?
     private var frontAtMenuOpen: NSRunningApplication?
     private var lastProblem: String?
+    private var warningToken = 0
 
     // MARK: Lifecycle
 
@@ -76,7 +77,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard failure != nil else { statusItem.button?.title = ""; return }
         NSSound.beep()
         statusItem.button?.title = " ⚠︎"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.statusItem.button?.title = "" }
+        warningToken += 1
+        let token = warningToken
+        // A newer warning keeps its own four seconds.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.warningToken == token else { return }
+            self.statusItem.button?.title = ""
+        }
     }
 
     // MARK: Menu
@@ -85,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: "SpaceKeeper")
         let menu = NSMenu()
+        menu.autoenablesItems = false        // otherwise every item with a target is enabled and isEnabled is ignored
         menu.delegate = self
         statusItem.menu = menu
     }
@@ -108,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Send window submenu
         let sendItem = NSMenuItem(title: "Send Front Window To", action: nil, keyEquivalent: "")
         let sub = NSMenu()
+        sub.autoenablesItems = false
         let count = primary?.userSpaces.count ?? 0
         for n in 1...max(count, 1) {
             let it = NSMenuItem(title: "Desktop \(n)", action: #selector(sendToDesktop(_:)), keyEquivalent: n <= 9 ? "\(n)" : "")

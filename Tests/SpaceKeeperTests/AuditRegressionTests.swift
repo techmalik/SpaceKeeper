@@ -100,6 +100,35 @@ struct AuditRegressionTests {
         for _ in 0..<100 where failed.sending { try await Task.sleep(nanoseconds: 1_000_000) }
         expect(failed.failed && failed.message == "keep me" && failed.screenshot == Data([3]), "Preserve failed draft")
         print("PASS: failed feedback preserves draft")
+        // Return travel after a move counts from where the display actually is.
+        expect(WindowMover.returnSteps(currentIndex: 4, origin: 0, expected: 4) == 4, "Return after full move")
+        expect(WindowMover.returnSteps(currentIndex: 2, origin: 0, expected: 4) == 2, "Return after a dropped key press")
+        expect(WindowMover.returnSteps(currentIndex: 0, origin: 0, expected: 4) == 0, "Nothing to return from")
+        expect(WindowMover.returnSteps(currentIndex: 1, origin: 3, expected: -2) == -2, "Return after moving left")
+        expect(WindowMover.returnSteps(currentIndex: nil, origin: 0, expected: 3) == 3, "Unknown position falls back")
+        print("PASS: return travel after a move")
+
+        let ns = DockInspector.Orientation.bottom
+        let dock = CGRect(x: 400, y: 1000, width: 600, height: 70)
+        expect(!DockInspector.isNear(.zero, listFrame: .zero, orientation: ns, magnificationReach: 0), "Unknown Dock frame is never near")
+        expect(!DockInspector.isNear(CGPoint(x: 2, y: 2), listFrame: .zero, orientation: .left, magnificationReach: 64), "No phantom corner Dock")
+        expect(DockInspector.isNear(CGPoint(x: 700, y: 1030), listFrame: dock, orientation: ns, magnificationReach: 0), "On the Dock")
+        expect(DockInspector.isNear(CGPoint(x: 700, y: 940), listFrame: dock, orientation: ns, magnificationReach: 64), "Magnified icon above the Dock")
+        expect(!DockInspector.isNear(CGPoint(x: 700, y: 940), listFrame: dock, orientation: ns, magnificationReach: 0), "Above an unmagnified Dock")
+        expect(DockInspector.magnificationReach(magnification: false, tileSize: 48, largeSize: 128) == 0, "No magnification")
+        expect(DockInspector.magnificationReach(magnification: true, tileSize: 48, largeSize: 128) == 80, "Magnification reach")
+        expect(DockInspector.magnificationReach(magnification: true, tileSize: 100, largeSize: 50) == 0, "Large smaller than tile")
+        expect(DockInspector.orientation("left") == .left && DockInspector.orientation(nil) == .bottom, "Dock orientation")
+        print("PASS: Dock hit region")
+
+        expect(Windows.newWindowRank(title: "New Window", hasSubmenu: true, cmdChar: nil, cmdModifiers: nil) == 0, "Terminal-style submenu")
+        expect(Windows.newWindowRank(title: "New Finder Window", hasSubmenu: false, cmdChar: "N", cmdModifiers: 0) == 1, "Finder")
+        expect(Windows.newWindowRank(title: "New", hasSubmenu: false, cmdChar: "N", cmdModifiers: 0) == 2, "TextEdit")
+        expect(Windows.newWindowRank(title: "New", hasSubmenu: true, cmdChar: nil, cmdModifiers: nil) == nil, "Xcode File › New submenu")
+        expect(Windows.newWindowRank(title: "Neues Fenster", hasSubmenu: false, cmdChar: "N", cmdModifiers: 0) == 3, "Localized ⌘N")
+        expect(Windows.newWindowRank(title: "Nouvelle fenêtre privée", hasSubmenu: false, cmdChar: "N", cmdModifiers: 1) == nil, "⇧⌘N isn't the plain new item")
+        expect(Windows.newWindowRank(title: "Open…", hasSubmenu: false, cmdChar: "O", cmdModifiers: 0) == nil, "Unrelated item")
+        print("PASS: new-window menu item selection")
         print("All regression checks passed. No network requests or desktop input were generated.")
     }
 }
