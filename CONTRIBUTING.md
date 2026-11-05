@@ -22,6 +22,9 @@ Dock features, `AppDelegate.swift` is the menu bar.
 
 ## Testing
 
+Run `./scripts/test.sh` for automated regression checks. It needs only the Xcode Command Line Tools and does not
+send network requests, synthesize input, or require Accessibility/Screen Recording permissions. CI runs it before packaging.
+
 There's no GUI test harness, so there is an opt-in debug channel that lets you drive the running app from a shell:
 
 ```bash

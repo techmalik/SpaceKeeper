@@ -2,6 +2,7 @@ import Cocoa
 import Carbon.HIToolbox
 import ServiceManagement
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     let preview = DockPreviewController()
@@ -24,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !CGPreflightScreenCaptureAccess() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { _ = CGRequestScreenCaptureAccess() }
         }
-        tick = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in self?.startServicesIfPermitted() }
+        tick = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.startServicesIfPermitted() } }
         startServicesIfPermitted()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.offerStayOnDesktop() }
     }
@@ -43,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func startServicesIfPermitted() {
-        guard AXIsProcessTrusted() else { return }
+        guard AXIsProcessTrusted() else { preview.stop(); clicker.stop(); return }
         preview.start()
         clicker.onHandled = { [weak self] in self?.preview.dismiss() }
         clicker.start()
@@ -96,7 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let displays = Spaces.displays()
-        let primary = displays.first
+        let app = frontAtMenuOpen ?? NSWorkspace.shared.frontmostApplication
+        let windowSpaces = app.flatMap { Windows.focused(of: $0) }.flatMap(AX.windowID).map(Spaces.spaces) ?? []
+        let primary = displays.first(where: { windowSpaces.contains($0.current) }) ?? displays.first
         let here = primary?.currentDesktopNumber.map { "Desktop \($0) of \(primary?.userSpaces.count ?? 0)" } ?? "Full-screen space"
         menu.addItem(header("SpaceKeeper — \(here)"))
         if let p = lastProblem { menu.addItem(header("⚠︎ Last move failed: \(p)")) }

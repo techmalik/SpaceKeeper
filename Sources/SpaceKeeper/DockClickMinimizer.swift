@@ -27,6 +27,7 @@ final class DockClickMinimizer {
     private var swallowing = false
     private var pressPoint = CGPoint.zero
     private var pressedApp: NSRunningApplication?
+    private var requestID = UUID()
 
     /// Called whenever we handle a click ourselves (the preview card should disappear).
     var onHandled: () -> Void = {}
@@ -53,6 +54,7 @@ final class DockClickMinimizer {
     }
 
     func stop() {
+        requestID = UUID()
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }
         tap = nil; source = nil; swallowing = false; pressedApp = nil
@@ -70,6 +72,7 @@ final class DockClickMinimizer {
             return pass
 
         case .leftMouseDown:
+            requestID = UUID()
             swallowing = false
             pressedApp = nil
             let plain = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift]).isEmpty
@@ -96,7 +99,12 @@ final class DockClickMinimizer {
             swallowing = false
             pressedApp = nil
             let p = pressPoint
-            DispatchQueue.main.async { self.resolve(app, at: p) }
+            let request = requestID
+            let spaces = Spaces.currentIDs()
+            DispatchQueue.main.async {
+                guard self.isCurrent(request, spaces: spaces, app: app) else { return }
+                self.resolve(app, at: p, request: request, spaces: spaces)
+            }
             return nil
 
         default:
@@ -106,14 +114,20 @@ final class DockClickMinimizer {
 
     // MARK: Decision (slow work is fine here)
 
-    private func resolve(_ app: NSRunningApplication, at point: CGPoint) {
-        guard let action = decide(for: app) else {
+    private func isCurrent(_ request: UUID, spaces: Set<Int>, app: NSRunningApplication) -> Bool {
+        requestID == request && tap != nil && !app.isTerminated && Spaces.currentIDs() == spaces
+    }
+
+    private func resolve(_ app: NSRunningApplication, at point: CGPoint, request: UUID, spaces: Set<Int>) {
+        let action = decide(for: app)
+        guard isCurrent(request, spaces: spaces, app: app) else { return }
+        guard let action else {
             dbg("\(app.localizedName ?? "?"): not handled -> click handed back to the Dock")
             replayClick(at: point, up: true)
             return
         }
         onHandled()
-        perform(action, app: app, point: point)
+        perform(action, app: app, point: point, request: request, spaces: spaces)
     }
 
     private func decide(for app: NSRunningApplication) -> Action? {
@@ -148,7 +162,7 @@ final class DockClickMinimizer {
         return nil
     }
 
-    private func perform(_ action: Action, app: NSRunningApplication, point: CGPoint) {
+    private func perform(_ action: Action, app: NSRunningApplication, point: CGPoint, request: UUID, spaces: Set<Int>) {
         switch action {
         case .minimize(let ws):
             ws.forEach(Windows.minimize)
@@ -161,18 +175,20 @@ final class DockClickMinimizer {
             AXUIElementPerformAction(item, kAXPressAction as CFString)
             // Activate only once the new window exists on this desktop. Activating earlier lets macOS pick one of
             // the app's windows on another desktop and jump there.
-            waitForWindow(of: app, tries: 25) { wins in
+            waitForWindow(of: app, tries: 25, request: request, spaces: spaces) { wins in
                 if let wins { Windows.bringForward(app, wins) }
                 else { dbg("\(app.localizedName ?? "?"): no window appeared -> click handed back to the Dock"); self.replayClick(at: point, up: true) }
             }
         }
     }
 
-    private func waitForWindow(of app: NSRunningApplication, tries: Int, _ done: @escaping ([Win]?) -> Void) {
+    private func waitForWindow(of app: NSRunningApplication, tries: Int, request: UUID, spaces: Set<Int>, _ done: @escaping ([Win]?) -> Void) {
+        // Never replay an old click or activate a window after the user has changed desktop or clicked again.
+        guard isCurrent(request, spaces: spaces, app: app) else { return }
         let wins = Windows.ofApp(app).filter { !$0.minimized }
         if !wins.isEmpty { done(wins); return }
         guard tries > 0 else { done(nil); return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { self.waitForWindow(of: app, tries: tries - 1, done) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { self.waitForWindow(of: app, tries: tries - 1, request: request, spaces: spaces, done) }
     }
 
     // MARK: Synthetic events (tagged so the tap ignores them)

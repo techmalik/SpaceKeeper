@@ -192,7 +192,8 @@ final class DebugControl {
                 out = "dragged \(dx)px"
             }
         case "glide":     // glide <x> <y> <seconds>: move the pointer smoothly (for demos)
-            if parts.count == 4, let x = Double(parts[1]), let y = Double(parts[2]), let secs = Double(parts[3]) {
+            if parts.count == 4, let x = Double(parts[1]), let y = Double(parts[2]), let secs = Double(parts[3]),
+               x.isFinite, y.isFinite, secs.isFinite, secs > 0, secs <= 60 {
                 let start = CGEvent(source: nil)?.location ?? .zero
                 let steps = max(20, Int(secs * 60))
                 for i in 1...steps {
