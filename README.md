@@ -13,6 +13,12 @@ A free, open-source menu-bar app for macOS Spaces.</p>
   <img src="https://img.shields.io/badge/macOS-14%2B-lightgrey.svg" alt="macOS 14+">
 </p>
 
+<p align="center"><img src="media/spacekeeper-demo.gif" width="800" alt="SpaceKeeper demo: send a window to Desktop 2, per-desktop Dock previews, a new window opening on this desktop, Dock-click minimize"></p>
+
+<p align="center"><img src="media/screenshot.png" width="800" alt="Dock preview showing only the Safari windows on this desktop"></p>
+
+<p align="center"><b>Install:</b> download the DMG from the <a href="https://github.com/techmalik/SpaceKeeper/releases/latest">latest release</a> and drag SpaceKeeper to Applications, or build it: <code>git clone https://github.com/techmalik/SpaceKeeper && cd SpaceKeeper && bash scripts/build.sh --install</code></p>
+
 ---
 
 macOS lets you have many desktops, but apps don't really *live* on them: click an app in the Dock and you get
