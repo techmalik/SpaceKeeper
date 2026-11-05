@@ -24,6 +24,8 @@ final class WindowMover {
         case notGrabbed = "Couldn't grab the window's title bar"
         case failed = "macOS didn't accept the move"
         case interrupted = "Move cancelled or modifier keys are still held"
+        case fullScreen = "Full-screen windows can't be sent to another desktop"
+        case minimized = "Minimized windows can't be moved; restore it first"
     }
 
     /// Target is either an absolute desktop number (1-based) or a relative step (-1 / +1).
@@ -43,6 +45,9 @@ final class WindowMover {
         guard winSpaces.count == 1 else { return winSpaces.isEmpty ? .notHere : .allDesktops }
         guard let display = Spaces.displays().first(where: { $0.current == winSpaces[0] }),
               let from = display.currentIndex else { return .notHere }
+        // A full-screen window lives on its own Space; it has no title bar to carry across.
+        guard display.currentDesktopNumber != nil, AX.bool(ax, "AXFullScreen") != true else { return .fullScreen }
+        guard AX.bool(ax, kAXMinimizedAttribute) != true else { return .minimized }
 
         let destination: Int?
         switch target {
@@ -60,6 +65,7 @@ final class WindowMover {
         guard await waitForModifierRelease(), !Task.isCancelled else { return .interrupted }
         guard Spaces.spaces(of: wid) == winSpaces,
               Spaces.displays().first(where: { $0.uuid == display.uuid })?.current == display.current else { return .notHere }
+        guard let startFrame = AX.frame(ax), startFrame.width > 0, startFrame.height > 0 else { return .notGrabbed }
         let grab = grabPoint(window: ax, pid: pid)
         var onTop = false
         for _ in 0..<4 {
@@ -68,10 +74,8 @@ final class WindowMover {
         }
         guard !Task.isCancelled else { return .interrupted }
         guard onTop else { return .covered }
-        guard let startFrame = AX.frame(ax), startFrame.width > 0, startFrame.height > 0 else { return .notGrabbed }
         let originalMouse = CGEvent(source: nil)?.location ?? grab
         let direction: CGKeyCode = steps > 0 ? 124 : 123          // → / ←
-        let back: CGKeyCode = steps > 0 ? 123 : 124
 
         var holdingMouse = false
         defer {
@@ -119,17 +123,23 @@ final class WindowMover {
         postMouse(.leftMouseUp, at: grab)
         holdingMouse = false
         await sleep(0.45)
-        CGWarpMouseCursorPosition(originalMouse)
 
-        // 4. Optionally return to where the user was.
+        // 4. Return to where the user was — always after a failed move (otherwise the user is left on a desktop
+        //    without the window), and after a successful one unless "Follow window" is on. The pointer stays on the
+        //    window's display until then: Ctrl+arrow switches the display under the pointer.
         let moved = await waitUntil { Spaces.spaces(of: wid) == [targetID] }
-        if moved && !Prefs.followWindow {
-            for _ in 0..<abs(steps) {
-                guard !Task.isCancelled else { return .interrupted }
-                postKey(back)
+        if !moved || !Prefs.followWindow {
+            // Count from where the display actually is, not from `steps`: a dropped key press or an interrupted
+            // transition would otherwise overshoot.
+            let now = Spaces.displays().first(where: { $0.uuid == display.uuid })?.currentIndex
+            let backSteps = Self.returnSteps(currentIndex: now, origin: from, expected: steps)
+            for _ in 0..<abs(backSteps) {
+                guard !Task.isCancelled else { CGWarpMouseCursorPosition(originalMouse); return .interrupted }
+                postKey(backSteps > 0 ? 123 : 124)
                 await sleep(0.95)
             }
         }
+        CGWarpMouseCursorPosition(originalMouse)
         return moved ? nil : .failed
     }
 
@@ -147,6 +157,13 @@ final class WindowMover {
 
     // MARK: - Event helpers
 
+    /// Arrow presses needed to get back to `origin` (positive = press ←). Falls back to the planned step count
+    /// when the display can't be read.
+    static func returnSteps(currentIndex: Int?, origin: Int, expected: Int) -> Int {
+        guard let currentIndex else { return expected }
+        return currentIndex - origin
+    }
+
     static func didFollowDrag(from start: CGRect?, to current: CGRect?) -> Bool {
         guard let start, let current else { return false }
         return abs(current.minX - start.minX) >= 2
@@ -155,7 +172,7 @@ final class WindowMover {
     /// ID of the front-most normal window containing `p` (global top-left coordinates).
     func topmostWindow(at p: CGPoint) -> CGWindowID? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
+        for w in list where (w[kCGWindowLayer as String] as? Int) == 0 && ((w[kCGWindowAlpha as String] as? Double) ?? 1) > 0 {
             if let d = w[kCGWindowBounds as String] as? NSDictionary, let b = CGRect(dictionaryRepresentation: d), b.contains(p) {
                 return w[kCGWindowNumber as String] as? CGWindowID
             }

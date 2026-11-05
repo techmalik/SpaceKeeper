@@ -15,10 +15,18 @@ final class DockInspector {
     private var dockPID: pid_t = 0
     private var lastRefresh = Date.distantPast
     private(set) var listFrame: CGRect = .zero
+    /// Dock settings, re-read with the list frame (at most once a second) instead of on every 12 Hz poll and click.
+    private(set) var orientation: Orientation = .bottom
+    private var magnificationReach: CGFloat = 0
 
     func refresh(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastRefresh) > 1.0 else { return }
         lastRefresh = Date()
+        let d = UserDefaults(suiteName: "com.apple.dock")
+        orientation = Self.orientation(d?.string(forKey: "orientation"))
+        magnificationReach = Self.magnificationReach(magnification: d?.bool(forKey: "magnification") ?? false,
+                                                     tileSize: d?.double(forKey: "tilesize") ?? 0,
+                                                     largeSize: d?.double(forKey: "largesize") ?? 0)
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
         if dockPID != app.processIdentifier || dock == nil {
             dockPID = app.processIdentifier
@@ -33,16 +41,23 @@ final class DockInspector {
         }
     }
 
+    static func magnificationReach(magnification: Bool, tileSize: Double, largeSize: Double) -> CGFloat {
+        guard magnification else { return 0 }
+        return CGFloat(max((largeSize > 0 ? largeSize : 128) - (tileSize > 0 ? tileSize : 64), 0))
+    }
+
     /// Cheap pre-check so we don't query Accessibility on every poll. With Dock magnification the hovered icon
     /// grows well beyond the Dock strip, so the region reaches out by the magnification amount.
     func isNearDock(_ p: CGPoint) -> Bool {
         refresh()
-        let d = UserDefaults(suiteName: "com.apple.dock")
-        let tile = d?.double(forKey: "tilesize") ?? 0
-        let large = d?.double(forKey: "largesize") ?? 0
-        let extra = (d?.bool(forKey: "magnification") ?? false) ? max((large > 0 ? large : 128) - (tile > 0 ? tile : 64), 0) : 0
+        return Self.isNear(p, listFrame: listFrame, orientation: orientation, magnificationReach: magnificationReach)
+    }
+
+    static func isNear(_ p: CGPoint, listFrame: CGRect, orientation: Orientation, magnificationReach: CGFloat) -> Bool {
+        // Before the Dock's frame is known, an empty rect would turn the screen's top-left corner into a "Dock".
+        guard !listFrame.isEmpty else { return false }
         var r = listFrame.insetBy(dx: -8, dy: -8)
-        let reach = extra + 16
+        let reach = magnificationReach + 16
         switch orientation {
         case .bottom: r.origin.y -= reach; r.size.height += reach
         case .left:   r.size.width += reach
@@ -68,8 +83,8 @@ final class DockInspector {
     }
 
     enum Orientation { case bottom, left, right }
-    var orientation: Orientation {
-        switch UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") {
+    static func orientation(_ value: String?) -> Orientation {
+        switch value {
         case "left": return .left
         case "right": return .right
         default: return .bottom

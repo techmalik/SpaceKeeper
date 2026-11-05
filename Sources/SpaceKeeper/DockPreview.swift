@@ -292,7 +292,7 @@ final class DockPreviewController {
         case .left:   origin = CGPoint(x: icon.maxX + 8, y: icon.midY - size.height / 2)
         case .right:  origin = CGPoint(x: icon.minX - size.width - 8, y: icon.midY - size.height / 2)
         }
-        let vf = screen.frame
+        let vf = screen.visibleFrame                 // keep the card off the menu bar
         origin.x = max(vf.minX + 8, min(origin.x, vf.maxX - size.width - 8))
         origin.y = max(vf.minY + 8, min(origin.y, vf.maxY - size.height - 8))
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
@@ -335,11 +335,17 @@ final class DockPreviewController {
     }
 
     private func close(_ id: CGWindowID) {
-        guard let (w, _) = window(id) else { return }
+        guard let (w, app) = window(id) else { return }
         Windows.close(w)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self, let item = self.hovered else { return }
-            self.show(item)
+        // Apps can take a moment to close a window. Refresh the card a few times, but only while it still shows
+        // the same app, and stop as soon as the window is gone.
+        let pid = app.processIdentifier
+        for delay in [0.2, 0.6, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, let item = self.hovered, self.shownPID == pid, self.panel?.isVisible == true,
+                      self.model.items.contains(where: { $0.id == id }) else { return }
+                self.show(item)
+            }
         }
     }
 }
