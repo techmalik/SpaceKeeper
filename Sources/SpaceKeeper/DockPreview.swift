@@ -14,6 +14,7 @@ final class PreviewModel: ObservableObject {
     @Published var appName = ""
     @Published var icon = NSImage()
     @Published var items: [PreviewItem] = []
+    @Published var panelWidth: CGFloat = 300
     @Published var hovered: CGWindowID?
     var onSelect: (CGWindowID) -> Void = { _ in }
     var onClose: (CGWindowID) -> Void = { _ in }
@@ -39,16 +40,20 @@ struct PreviewView: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                     .padding(.horizontal, 4).padding(.bottom, 2)
             }
-            HStack(spacing: 10) {
-                ForEach(model.items) { item in
-                    Card(item: item, icon: model.icon, hover: model.hovered == item.id,
-                         onHover: { model.hovered = $0 ? item.id : (model.hovered == item.id ? nil : model.hovered) },
-                         onSelect: { model.onSelect(item.id) }, onClose: { model.onClose(item.id) },
-                         onMinimize: { model.onMinimize(item.id) })
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(model.items) { item in
+                        Card(item: item, icon: model.icon, hover: model.hovered == item.id,
+                             onHover: { model.hovered = $0 ? item.id : (model.hovered == item.id ? nil : model.hovered) },
+                             onSelect: { model.onSelect(item.id) }, onClose: { model.onClose(item.id) },
+                             onMinimize: { model.onMinimize(item.id) })
+                    }
                 }
             }
+            .frame(height: model.items.isEmpty ? 0 : cardHeight + 30)
         }
         .padding(12)
+        .frame(width: model.panelWidth)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.12)))
     }
@@ -110,11 +115,15 @@ struct PreviewView: View {
 /// Driven by a 12 Hz poll of the pointer rather than by mouse-moved events: events can be dropped or arrive
 /// just before the pointer settles, a single failed Dock lookup must not cancel a pending card, and a poll
 /// makes "pointer rests on an icon for 0.3 s" trivial to express.
+@MainActor
 final class DockPreviewController {
     private let model = PreviewModel()
     private var panel: NSPanel?
     private var clickMonitor: Any?
     private var pollTimer: Timer?
+    private var spaceObserver: NSObjectProtocol?
+    private var captureTask: Task<Void, Never>?
+    private var captureGeneration = UUID()
 
     private var hovered: DockItem?                 // item the visible card belongs to (geometry for hit-testing)
     private var shownPID: pid_t = 0
@@ -129,13 +138,16 @@ final class DockPreviewController {
 
     func start() {
         guard pollTimer == nil else { return }
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.hide() } }
         model.onSelect = { [weak self] id in self?.select(id) }
         model.onClose = { [weak self] id in self?.close(id) }
         model.onMinimize = { [weak self] id in self?.minimize(id) }
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.dismiss()
         }
-        let t = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in self?.poll() }
+        let t = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.poll() } }
         RunLoop.main.add(t, forMode: .common)       // .common: keeps firing while menus or drags are tracking
         pollTimer = t
     }
@@ -143,6 +155,8 @@ final class DockPreviewController {
     func stop() {
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
+        if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
+        spaceObserver = nil
         pollTimer?.invalidate(); pollTimer = nil
         hide()
     }
@@ -220,6 +234,10 @@ final class DockPreviewController {
     // MARK: Showing
 
     private func show(_ item: DockItem) {
+        captureTask?.cancel()
+        captureGeneration = UUID()
+        let generation = captureGeneration
+        model.hovered = nil
         let wins = Windows.ofApp(item.app)
         shownPID = item.app.processIdentifier
         shownApp = item.app
@@ -236,9 +254,9 @@ final class DockPreviewController {
         panel.orderFrontRegardless()
         guard !wins.isEmpty else { return }
 
-        Task { @MainActor in
+        captureTask = Task { @MainActor in
             let fresh = await Thumbnails.shared.refresh(wins)
-            guard self.shownPID == item.app.processIdentifier else { return }
+            guard !Task.isCancelled, self.captureGeneration == generation else { return }
             self.model.items = self.model.items.map { var i = $0; if let img = fresh[i.id] { i.image = img }; return i }
         }
     }
@@ -261,11 +279,12 @@ final class DockPreviewController {
     }
 
     private func position(_ panel: NSPanel, for item: DockItem) {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(item.frame.cocoaRect) })
+                ?? NSScreen.main ?? NSScreen.screens.first else { return }
+        model.panelWidth = Self.previewWidth(count: model.items.count, availableWidth: screen.visibleFrame.width)
         let host = panel.contentView as! NSHostingView<PreviewView>
         host.layoutSubtreeIfNeeded()
-        var size = host.fittingSize
-        let screen = NSScreen.screens.first { $0.frame.intersects(item.frame.cocoaRect) } ?? NSScreen.main ?? NSScreen.screens[0]
-        size.width = min(size.width, screen.visibleFrame.width - 24)
+        let size = NSSize(width: model.panelWidth, height: host.fittingSize.height)
         let icon = item.frame.cocoaRect
         var origin: CGPoint
         switch DockInspector.shared.orientation {
@@ -279,7 +298,14 @@ final class DockPreviewController {
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
     }
 
+    static func previewWidth(count: Int, availableWidth: CGFloat) -> CGFloat {
+        min(max(240, CGFloat(count) * (cardWidth + 10) + 14), max(1, availableWidth - 24))
+    }
+
     func hide() {
+        captureTask?.cancel()
+        captureTask = nil
+        captureGeneration = UUID()
         panel?.orderOut(nil)
         shownPID = 0
         shownApp = nil
@@ -311,7 +337,9 @@ final class DockPreviewController {
     private func close(_ id: CGWindowID) {
         guard let (w, _) = window(id) else { return }
         Windows.close(w)
-        model.items.removeAll { $0.id == id }
-        if let panel, let item = hovered { position(panel, for: item) }      // an empty card says "No windows on this desktop"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, let item = self.hovered else { return }
+            self.show(item)
+        }
     }
 }

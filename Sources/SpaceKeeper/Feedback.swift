@@ -46,13 +46,18 @@ enum FeedbackSender {
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.upload(for: req, from: body)
+        try validateResponse(data: data, response: response)
+    }
+
+    static func validateResponse(data: Data, response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw FeedbackError.server("The feedback service returned an error. Please try again.")
         }
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let ok = (json["success"] as? Bool) ?? ((json["success"] as? String) == "true")
-            if !ok { throw FeedbackError.server((json["message"] as? String) ?? "The feedback service rejected the message.") }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw FeedbackError.server("The feedback service did not confirm receipt. Your draft has been kept; you can use Email Instead.")
         }
+        let ok = (json["success"] as? Bool) ?? ((json["success"] as? String) == "true")
+        if !ok { throw FeedbackError.server((json["message"] as? String) ?? "The feedback service rejected the message.") }
     }
 
     /// Downscales and compresses an image so it stays well under email attachment limits.
@@ -76,6 +81,16 @@ enum FeedbackSender {
 // MARK: - UI
 
 final class FeedbackModel: ObservableObject {
+    typealias Sender = @MainActor (FeedbackKind, String, String, Bool, Data?) async throws -> Void
+    private let sender: Sender
+
+    init(sender: @escaping Sender = { kind, message, email, info, screenshot in
+        try await FeedbackSender.send(kind: kind, message: message, replyTo: email,
+                                      includeSystemInfo: info, screenshot: screenshot)
+    }) {
+        self.sender = sender
+    }
+
     @Published var kind: FeedbackKind = .idea
     @Published var message = ""
     @Published var email = ""
@@ -91,13 +106,16 @@ final class FeedbackModel: ObservableObject {
     var canSend: Bool { !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !sending }
 
     @MainActor func send() {
+        guard canSend else { return }
         sending = true; failed = false; status = ""
         let (k, m, e, i, s) = (kind, message, email.trimmingCharacters(in: .whitespaces), includeSystemInfo, screenshot)
         Task { @MainActor in
             do {
-                try await FeedbackSender.send(kind: k, message: m, replyTo: e, includeSystemInfo: i, screenshot: s)
+                try await sender(k, m, e, i, s)
                 status = "Thank you! Your feedback was sent."
-                message = ""; screenshot = nil; screenshotName = ""
+                // A user can keep editing while this request is in flight. Only clear the submitted draft.
+                if message == m { message = "" }
+                if screenshot == s { screenshot = nil; screenshotName = "" }
             } catch {
                 failed = true
                 status = "Couldn't send it: \(error.localizedDescription)"
@@ -210,7 +228,8 @@ final class FeedbackWindowController {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
             p.arguments = ["-i", "-x", tmp.path]
-            try? p.run(); p.waitUntilExit()
+            do { try p.run(); p.waitUntilExit() }
+            catch { /* Restore the form even if the screenshot process cannot launch. */ }
             DispatchQueue.main.async {
                 if let img = NSImage(contentsOf: tmp) { self.attach(img, name: "screenshot.jpg") }
                 try? FileManager.default.removeItem(at: tmp)

@@ -15,6 +15,22 @@ struct DisplaySpaces {
     var currentIndex: Int? { spaces.firstIndex { $0.id == current } }
     /// 1-based "Desktop N" number of the current space, if it is a regular desktop.
     var currentDesktopNumber: Int? { userSpaces.firstIndex { $0.id == current }.map { $0 + 1 } }
+
+    /// Resolve a desktop target to its position in Mission Control, counting full-screen Spaces
+    /// only when calculating the number of arrow presses, never as a destination.
+    func destinationIndex(desktop: Int? = nil, relative: Int = 0) -> Int? {
+        guard let currentUser = userSpaces.firstIndex(where: { $0.id == current }) else { return nil }
+        let index: Int
+        if let desktop {
+            guard desktop > 0, desktop <= userSpaces.count else { return nil }
+            index = desktop - 1
+        } else {
+            let (next, overflow) = currentUser.addingReportingOverflow(relative)
+            guard !overflow, userSpaces.indices.contains(next) else { return nil }
+            index = next
+        }
+        return spaces.firstIndex { $0.id == userSpaces[index].id }
+    }
 }
 
 enum Spaces {

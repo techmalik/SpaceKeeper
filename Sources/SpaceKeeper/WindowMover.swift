@@ -23,6 +23,7 @@ final class WindowMover {
         case covered = "Another window is covering this window's title bar"
         case notGrabbed = "Couldn't grab the window's title bar"
         case failed = "macOS didn't accept the move"
+        case interrupted = "Move cancelled or modifier keys are still held"
     }
 
     /// Target is either an absolute desktop number (1-based) or a relative step (-1 / +1).
@@ -43,16 +44,12 @@ final class WindowMover {
         guard let display = Spaces.displays().first(where: { $0.current == winSpaces[0] }),
               let from = display.currentIndex else { return .notHere }
 
-        let to: Int
+        let destination: Int?
         switch target {
-        case .desktop(let n):
-            guard n >= 1, n <= display.userSpaces.count,
-                  let idx = display.spaces.firstIndex(where: { $0.id == display.userSpaces[n - 1].id }) else { return .badDesktop }
-            to = idx
-        case .relative(let delta):
-            to = from + delta
-            guard to >= 0, to < display.spaces.count else { return .badDesktop }
+        case .desktop(let n): destination = display.destinationIndex(desktop: n)
+        case .relative(let delta): destination = display.destinationIndex(relative: delta)
         }
+        guard let to = destination else { return .badDesktop }
         let steps = to - from
         if steps == 0 { return nil }
         let targetID = display.spaces[to].id
@@ -60,33 +57,46 @@ final class WindowMover {
         busy = true
         defer { busy = false }
 
-        await waitForModifierRelease()
+        guard await waitForModifierRelease(), !Task.isCancelled else { return .interrupted }
+        guard Spaces.spaces(of: wid) == winSpaces,
+              Spaces.displays().first(where: { $0.uuid == display.uuid })?.current == display.current else { return .notHere }
         let grab = grabPoint(window: ax, pid: pid)
         var onTop = false
         for _ in 0..<4 {
             await raise(ax: ax, pid: pid)
             if topmostWindow(at: grab) == wid { onTop = true; break }
         }
+        guard !Task.isCancelled else { return .interrupted }
         guard onTop else { return .covered }
+        guard let startFrame = AX.frame(ax), startFrame.width > 0, startFrame.height > 0 else { return .notGrabbed }
         let originalMouse = CGEvent(source: nil)?.location ?? grab
         let direction: CGKeyCode = steps > 0 ? 124 : 123          // → / ←
         let back: CGKeyCode = steps > 0 ? 123 : 124
 
+        var holdingMouse = false
+        defer {
+            if holdingMouse {
+                postMouse(.leftMouseUp, at: lastMouse)
+                CGWarpMouseCursorPosition(originalMouse)
+            }
+        }
+
         // 1. Pick the window up by its title bar.
         postMouse(.leftMouseDown, at: grab)
+        holdingMouse = true
         await sleep(0.06)
-        let startFrame = AX.frame(ax)
         for i in 1...6 {
+            guard !Task.isCancelled else { return .interrupted }
             postMouse(.leftMouseDragged, at: CGPoint(x: grab.x + Double(i) * 10, y: grab.y))
             await sleep(0.03)
         }
         let grabbed = await waitUntil(timeout: 0.6) {
-            guard let startFrame, let now = AX.frame(ax) else { return true }
-            return abs(now.minX - startFrame.minX) >= 2
+            Self.didFollowDrag(from: startFrame, to: AX.frame(ax))
         }
         if !grabbed {
             // Window didn't follow the pointer: release and bail out before touching any Spaces.
             postMouse(.leftMouseUp, at: CGPoint(x: grab.x + 60, y: grab.y))
+            holdingMouse = false
             await sleep(0.1)
             CGWarpMouseCursorPosition(originalMouse)
             return .notGrabbed
@@ -94,6 +104,7 @@ final class WindowMover {
 
         // 2. Carry it across the Spaces.
         for _ in 0..<abs(steps) {
+            guard !Task.isCancelled else { return .interrupted }
             postKey(direction)
             await sleep(0.95)
             postMouse(.leftMouseDragged, at: CGPoint(x: grab.x + 60, y: grab.y))
@@ -106,6 +117,7 @@ final class WindowMover {
         }
         await sleep(0.1)
         postMouse(.leftMouseUp, at: grab)
+        holdingMouse = false
         await sleep(0.45)
         CGWarpMouseCursorPosition(originalMouse)
 
@@ -113,6 +125,7 @@ final class WindowMover {
         let moved = await waitUntil { Spaces.spaces(of: wid) == [targetID] }
         if moved && !Prefs.followWindow {
             for _ in 0..<abs(steps) {
+                guard !Task.isCancelled else { return .interrupted }
                 postKey(back)
                 await sleep(0.95)
             }
@@ -122,13 +135,22 @@ final class WindowMover {
 
     /// Switch the visible Space by `steps` (negative = left). Used by the debug channel.
     func switchSpaces(by steps: Int) async {
+        guard !busy, (-100...100).contains(steps) else { return }
+        busy = true
+        defer { busy = false }
         for _ in 0..<abs(steps) {
+            guard !Task.isCancelled else { return }
             postKey(steps > 0 ? 124 : 123)
             await sleep(0.95)
         }
     }
 
     // MARK: - Event helpers
+
+    static func didFollowDrag(from start: CGRect?, to current: CGRect?) -> Bool {
+        guard let start, let current else { return false }
+        return abs(current.minX - start.minX) >= 2
+    }
 
     /// ID of the front-most normal window containing `p` (global top-left coordinates).
     func topmostWindow(at p: CGPoint) -> CGWindowID? {
@@ -193,11 +215,15 @@ final class WindowMover {
         }
     }
 
-    func sleep(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
+    func sleep(_ s: Double) async {
+        guard s.isFinite, s > 0, s <= 60 else { return }
+        try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000))
+    }
 
     private func waitUntil(timeout: Double = 1.5, _ cond: () -> Bool) async -> Bool {
         let end = Date().addingTimeInterval(timeout)
         while Date() < end {
+            guard !Task.isCancelled else { return false }
             if cond() { return true }
             await sleep(0.1)
         }
@@ -205,14 +231,16 @@ final class WindowMover {
     }
 
     /// Hotkeys are pressed with ⌃⌥⌘ held; synthetic arrows must not inherit those modifiers.
-    private func waitForModifierRelease() async {
+    private func waitForModifierRelease() async -> Bool {
         let mask: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
         let end = Date().addingTimeInterval(2)
         while Date() < end,
               !CGEventSource.flagsState(.combinedSessionState).intersection(mask).isEmpty {
+            guard !Task.isCancelled else { return false }
             await sleep(0.05)
         }
         await sleep(0.05)
+        return CGEventSource.flagsState(.combinedSessionState).intersection(mask).isEmpty
     }
 
     // MARK: - Finding a safe place to grab the window

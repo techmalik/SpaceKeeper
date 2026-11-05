@@ -34,7 +34,7 @@ enum Prefs {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
-        try? p.run()
+        do { try p.run() } catch { return -1 }
         p.waitUntilExit()
         return p.terminationStatus
     }
