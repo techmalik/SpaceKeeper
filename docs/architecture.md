@@ -6,10 +6,15 @@ frameworks. No Xcode project is needed — it builds with Swift Package Manager 
 | File | Responsibility |
 |---|---|
 | `main.swift`, `AppDelegate.swift` | App bootstrap, menu-bar menu, permissions, hotkeys, first-run prompt |
-| `Spaces.swift` | Reads desktops per display and which desktop(s) a window is on |
+| `Spaces.swift` | Reads desktops per display, which desktop(s) a window is on, display geometry, desktop names, and every window on every desktop (`WindowCatalog`) |
 | `Windows.swift` | Accessibility helpers: list/minimize/raise/close windows, find "New Window" menu items |
 | `WindowMover.swift` | Moves a window to another desktop (see below) |
-| `HotKeys.swift` | Global hotkeys via Carbon `RegisterEventHotKey` (needs no extra permission) |
+| `HotKeys.swift` | Global hotkeys via Carbon `RegisterEventHotKey` (needs no extra permission); the action list, defaults and user bindings |
+| `SettingsWindow.swift` | Settings: shortcut recorder, home desktops, desktop names |
+| `Switcher.swift` | The `⌃⌥⌘ Space` desktop switcher overlay |
+| `HomeDesktops.swift` | Per-app home desktops: an `AXObserver` per app with a rule sends new windows home |
+| `Layouts.swift` | Saved layouts and the restore planner (`LayoutPlanner` is pure and unit-tested) |
+| `Updates.swift` | GitHub latest-release check |
 | `DockInspector.swift` | Asks the Dock process (via Accessibility) which app icon is under a point |
 | `DockPreview.swift`, `Thumbnails.swift` | Hover card UI and ScreenCaptureKit thumbnails |
 | `DockClickMinimizer.swift` | Event tap that turns Dock clicks into minimize / restore / raise / new window |
@@ -52,3 +57,17 @@ original press so reordering Dock icons keeps working.
 | `_AXUIElementGetWindow` | AX element → `CGWindowID` |
 
 Everything else is public API (Accessibility, CoreGraphics event taps, ScreenCaptureKit, Carbon hotkeys).
+
+## Other displays, many windows, layouts
+
+- **Another display:** `WindowMover.plan` resolves the target. For another display the window is dragged by its title bar
+  onto that display (it lands on the desktop showing there), Ctrl+arrow is pressed with the pointer on that display, and
+  the return trip happens on that display too.
+- **Several windows:** `moveAll` moves them one by one; every trip but the last returns to the starting desktop so the
+  next window can be picked up.
+- **Layouts:** a layout stores (app, title, display, desktop) per window. Restoring opens missing apps, matches windows
+  (title first, then order), visits each desktop that has a misplaced window, carries those windows away, and finally
+  returns every display to the desktop it started on. Accessibility only sees the current desktop's windows, which is
+  why the restore has to visit desktops.
+- **Auto-hidden Dock:** `DockInspector.track` (12 Hz) notices the pointer pressing the Dock's screen edge, waits the
+  Dock's reveal delay, and only then treats the Dock as present until the pointer leaves it.

@@ -46,6 +46,7 @@ struct Win {
     let fullScreen: Bool
     let frame: CGRect
     let spaces: [Int]
+    var isStandard = true          // false for dialogs
 }
 
 enum Windows {
@@ -68,7 +69,8 @@ enum Windows {
                 minimized: AX.bool(w, kAXMinimizedAttribute) ?? false,
                 fullScreen: AX.bool(w, "AXFullScreen") ?? false,
                 frame: AX.frame(w) ?? .zero,
-                spaces: spaces))
+                spaces: spaces,
+                isStandard: sub == kAXStandardWindowSubrole))
         }
         return out
     }

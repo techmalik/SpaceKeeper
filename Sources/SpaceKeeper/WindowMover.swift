@@ -11,7 +11,7 @@ import ApplicationServices
 @MainActor
 final class WindowMover {
     static let shared = WindowMover()
-    private var busy = false
+    private(set) var busy = false
 
     enum Failure: String, Error {
         case noAccess = "Accessibility permission is missing"
@@ -26,10 +26,12 @@ final class WindowMover {
         case interrupted = "Move cancelled or modifier keys are still held"
         case fullScreen = "Full-screen windows can't be sent to another desktop"
         case minimized = "Minimized windows can't be moved; restore it first"
+        case targetFullScreen = "The other display is showing a full-screen app"
     }
 
-    /// Target is either an absolute desktop number (1-based) or a relative step (-1 / +1).
-    enum Target { case desktop(Int), relative(Int) }
+    /// An absolute desktop number (1-based) or a relative step (-1 / +1) on the window's display; a desktop on a
+    /// given display (desktop 0 = whatever that display shows now); or the next display's current desktop.
+    enum Target: Equatable { case desktop(Int), relative(Int), display(String, Int), nextDisplay }
 
     func moveFocusedWindow(of app: NSRunningApplication?, to target: Target) async -> Failure? {
         guard AXIsProcessTrusted() else { return .noAccess }
@@ -37,27 +39,75 @@ final class WindowMover {
         return await move(ax: ax, wid: wid, pid: app.processIdentifier, to: target)
     }
 
-    func move(ax: AXUIElement, wid: CGWindowID, pid: pid_t, to target: Target) async -> Failure? {
+    /// Move several windows one after another. Each trip returns to this desktop so the next window can be picked
+    /// up; only the last one honours "Follow window".
+    func moveAll(_ wins: [Win], to target: Target) async -> (moved: Int, failures: [Failure]) {
+        var moved = 0
+        var failures: [Failure] = []
+        for (i, w) in wins.enumerated() {
+            guard !Task.isCancelled else { break }
+            let last = i == wins.count - 1
+            if let f = await move(ax: w.ax, wid: w.id, pid: w.pid, to: target, follow: last ? nil : false) {
+                failures.append(f)
+                if f == .badDesktop || f == .noAccess || f == .interrupted { break }
+            } else {
+                moved += 1
+            }
+        }
+        return (moved, failures)
+    }
+
+    /// Where a target lands: the destination display, its index in Mission Control, and that display's index now.
+    struct Plan: Equatable { let display: String; let to: Int; let from: Int; var crossDisplay: Bool }
+
+    static func plan(source: DisplaySpaces, displays: [DisplaySpaces], target: Target) -> Result<Plan, Failure> {
+        guard let from = source.currentIndex else { return .failure(.notHere) }
+        func same(_ to: Int?) -> Result<Plan, Failure> {
+            to.map { .success(Plan(display: source.uuid, to: $0, from: from, crossDisplay: false)) } ?? .failure(.badDesktop)
+        }
+        let other: DisplaySpaces
+        let desktop: Int
+        switch target {
+        case .desktop(let n): return same(source.destinationIndex(desktop: n))
+        case .relative(let delta): return same(source.destinationIndex(relative: delta))
+        case .display(let uuid, let n):
+            if uuid == source.uuid { return n == 0 ? same(from) : same(source.destinationIndex(desktop: n)) }
+            guard let d = displays.first(where: { $0.uuid == uuid }) else { return .failure(.badDesktop) }
+            other = d; desktop = n
+        case .nextDisplay:
+            guard displays.count > 1, let i = displays.firstIndex(where: { $0.uuid == source.uuid }) else { return .failure(.badDesktop) }
+            other = displays[(i + 1) % displays.count]; desktop = 0
+        }
+        // The window is dropped onto whatever the other display shows, so that must be a regular desktop.
+        guard other.currentDesktopNumber != nil, let otherFrom = other.currentIndex else { return .failure(.targetFullScreen) }
+        guard let to = desktop == 0 ? otherFrom : other.index(ofDesktop: desktop) else { return .failure(.badDesktop) }
+        return .success(Plan(display: other.uuid, to: to, from: otherFrom, crossDisplay: true))
+    }
+
+    /// `follow` overrides the "Follow window to its new desktop" setting for this move.
+    func move(ax: AXUIElement, wid: CGWindowID, pid: pid_t, to target: Target, follow: Bool? = nil) async -> Failure? {
         guard AXIsProcessTrusted() else { return .noAccess }
         guard !busy else { return .busy }
 
         let winSpaces = Spaces.spaces(of: wid)
         guard winSpaces.count == 1 else { return winSpaces.isEmpty ? .notHere : .allDesktops }
-        guard let display = Spaces.displays().first(where: { $0.current == winSpaces[0] }),
-              let from = display.currentIndex else { return .notHere }
+        let displays = Spaces.displays()
+        guard let display = displays.first(where: { $0.current == winSpaces[0] }) else { return .notHere }
         // A full-screen window lives on its own Space; it has no title bar to carry across.
         guard display.currentDesktopNumber != nil, AX.bool(ax, "AXFullScreen") != true else { return .fullScreen }
         guard AX.bool(ax, kAXMinimizedAttribute) != true else { return .minimized }
 
-        let destination: Int?
-        switch target {
-        case .desktop(let n): destination = display.destinationIndex(desktop: n)
-        case .relative(let delta): destination = display.destinationIndex(relative: delta)
+        let plan: Plan
+        switch Self.plan(source: display, displays: displays, target: target) {
+        case .failure(let f): return f
+        case .success(let p): plan = p
         }
-        guard let to = destination else { return .badDesktop }
-        let steps = to - from
-        if steps == 0 { return nil }
-        let targetID = display.spaces[to].id
+        let steps = plan.to - plan.from
+        if steps == 0 && !plan.crossDisplay { return nil }
+        guard let destDisplay = displays.first(where: { $0.uuid == plan.display }) else { return .badDesktop }
+        let targetID = destDisplay.spaces[plan.to].id
+        let dropBounds = plan.crossDisplay ? DisplayGeometry.bounds(forUUID: plan.display) : nil
+        if plan.crossDisplay && dropBounds == nil { return .badDesktop }
 
         busy = true
         defer { busy = false }
@@ -106,33 +156,48 @@ final class WindowMover {
             return .notGrabbed
         }
 
-        // 2. Carry it across the Spaces.
+        // 2. To another display: carry it across the screen edge onto that display's current desktop.
+        var hold = CGPoint(x: grab.x + 60, y: grab.y)
+        if let b = dropBounds {
+            let drop = CGPoint(x: b.midX, y: b.minY + 60)
+            let n = 24
+            for i in 1...n {
+                guard !Task.isCancelled else { return .interrupted }
+                let t = Double(i) / Double(n)
+                postMouse(.leftMouseDragged, at: CGPoint(x: hold.x + (drop.x - hold.x) * t, y: hold.y + (drop.y - hold.y) * t))
+                await sleep(0.02)
+            }
+            hold = drop
+            await sleep(0.25)
+        }
+
+        // 3. Carry it across the Spaces (Ctrl+arrow acts on the display under the pointer).
         for _ in 0..<abs(steps) {
             guard !Task.isCancelled else { return .interrupted }
             postKey(direction)
             await sleep(0.95)
-            postMouse(.leftMouseDragged, at: CGPoint(x: grab.x + 60, y: grab.y))
+            postMouse(.leftMouseDragged, at: hold)
         }
 
-        // 3. Put it down.
+        // 4. Put it down.
         for i in stride(from: 5, through: 0, by: -1) {
-            postMouse(.leftMouseDragged, at: CGPoint(x: grab.x + Double(i) * 10, y: grab.y))
+            postMouse(.leftMouseDragged, at: CGPoint(x: hold.x - 60 + Double(i) * 10 + 10, y: hold.y))
             await sleep(0.03)
         }
         await sleep(0.1)
-        postMouse(.leftMouseUp, at: grab)
+        postMouse(.leftMouseUp, at: lastMouse)
         holdingMouse = false
         await sleep(0.45)
 
-        // 4. Return to where the user was — always after a failed move (otherwise the user is left on a desktop
+        // 5. Return to where the user was — always after a failed move (otherwise the user is left on a desktop
         //    without the window), and after a successful one unless "Follow window" is on. The pointer stays on the
-        //    window's display until then: Ctrl+arrow switches the display under the pointer.
+        //    destination display until then: Ctrl+arrow switches the display under the pointer.
         let moved = await waitUntil { Spaces.spaces(of: wid) == [targetID] }
-        if !moved || !Prefs.followWindow {
+        if !moved || !(follow ?? Prefs.followWindow) {
             // Count from where the display actually is, not from `steps`: a dropped key press or an interrupted
             // transition would otherwise overshoot.
-            let now = Spaces.displays().first(where: { $0.uuid == display.uuid })?.currentIndex
-            let backSteps = Self.returnSteps(currentIndex: now, origin: from, expected: steps)
+            let now = Spaces.displays().first(where: { $0.uuid == plan.display })?.currentIndex
+            let backSteps = Self.returnSteps(currentIndex: now, origin: plan.from, expected: steps)
             for _ in 0..<abs(backSteps) {
                 guard !Task.isCancelled else { CGWarpMouseCursorPosition(originalMouse); return .interrupted }
                 postKey(backSteps > 0 ? 123 : 124)
@@ -141,6 +206,22 @@ final class WindowMover {
         }
         CGWarpMouseCursorPosition(originalMouse)
         return moved ? nil : .failed
+    }
+
+    /// Show "Desktop N" on a display (the pointer is parked on that display while switching, then put back).
+    @discardableResult
+    func switchTo(desktop n: Int, display uuid: String) async -> Bool {
+        guard let d = Spaces.displays().first(where: { $0.uuid == uuid }),
+              let to = d.index(ofDesktop: n), let from = d.currentIndex else { return false }
+        if to == from { return true }
+        guard !busy, await waitForModifierRelease() else { return false }
+        let original = CGEvent(source: nil)?.location
+        if let b = DisplayGeometry.bounds(forUUID: uuid), let p = original, !b.contains(p) {
+            CGWarpMouseCursorPosition(CGPoint(x: b.midX, y: b.midY))
+        }
+        await switchSpaces(by: to - from)
+        if let p = original { CGWarpMouseCursorPosition(p) }
+        return Spaces.displays().first(where: { $0.uuid == uuid })?.current == d.spaces[to].id
     }
 
     /// Switch the visible Space by `steps` (negative = left). Used by the debug channel.

@@ -17,6 +17,7 @@ final class DockClickMinimizer {
         case restore(NSRunningApplication, [Win])
         case raise(NSRunningApplication, [Win])
         case newWindow(NSRunningApplication, AXUIElement)
+        case goHome(NSRunningApplication, desktop: Int, display: String)
     }
 
     /// Tags the events we re-post ourselves so the tap lets them through untouched.
@@ -119,7 +120,7 @@ final class DockClickMinimizer {
     }
 
     private func resolve(_ app: NSRunningApplication, at point: CGPoint, request: UUID, spaces: Set<Int>) {
-        let action = decide(for: app)
+        let action = decide(for: app, at: point)
         guard isCurrent(request, spaces: spaces, app: app) else { return }
         guard let action else {
             dbg("\(app.localizedName ?? "?"): not handled -> click handed back to the Dock")
@@ -130,11 +131,22 @@ final class DockClickMinimizer {
         perform(action, app: app, point: point, request: request, spaces: spaces)
     }
 
-    private func decide(for app: NSRunningApplication) -> Action? {
+    private func decide(for app: NSRunningApplication, at point: CGPoint) -> Action? {
         let here = Windows.ofApp(app)                                   // this desktop, incl. minimized
         let visible = here.filter { !$0.minimized }
         let isFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
         let name = app.localizedName ?? "?"
+
+        // An app with a home desktop and nothing here: go to its home instead of opening a window here.
+        if here.isEmpty, let home = HomeDesktops.home(of: app.bundleIdentifier) {
+            let displays = Spaces.displays()
+            if let uuid = DisplayGeometry.uuid(containing: point, in: displays) ?? displays.first?.uuid,
+               let d = displays.first(where: { $0.uuid == uuid }),
+               let current = d.currentDesktopNumber, current != home, home <= d.userSpaces.count {
+                dbg("\(name): nothing here -> go to home Desktop \(home)")
+                return .goHome(app, desktop: home, display: uuid)
+            }
+        }
 
         let minimizable = visible.filter { !$0.fullScreen }
         if isFront, Prefs.clickToMinimize, !minimizable.isEmpty {
@@ -171,6 +183,21 @@ final class DockClickMinimizer {
             Windows.bringForward(app, ws)
         case .raise(let app, let ws):
             Windows.bringForward(app, ws)
+        case .goHome(let app, let desktop, let display):
+            Task { @MainActor in
+                guard await WindowMover.shared.switchTo(desktop: desktop, display: display) else { return }
+                let wins = Windows.ofApp(app).filter { !$0.minimized }
+                if !wins.isEmpty { Windows.bringForward(app, wins); return }
+                // Nothing on the home desktop either: open a window there.
+                if Prefs.openNewWindowHere, let item = Windows.newWindowItem(of: app) {
+                    AXUIElementPerformAction(item, kAXPressAction as CFString)
+                    self.waitForWindow(of: app, tries: 25, request: self.requestID, spaces: Spaces.currentIDs()) { wins in
+                        if let wins { Windows.bringForward(app, wins) }
+                    }
+                } else {
+                    Windows.bringForward(app, [])
+                }
+            }
         case .newWindow(let app, let item):
             AXUIElementPerformAction(item, kAXPressAction as CFString)
             // Activate only once the new window exists on this desktop. Activating earlier lets macOS pick one of

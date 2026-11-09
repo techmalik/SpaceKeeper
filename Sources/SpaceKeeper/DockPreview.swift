@@ -170,8 +170,9 @@ final class DockPreviewController {
     // MARK: Polling
 
     private func poll() {
-        guard Prefs.previewsEnabled else { if panel?.isVisible == true { hide() }; return }
         let p = CGEvent(source: nil)?.location ?? .zero
+        DockInspector.shared.track(p)                  // auto-hidden Dock state, also needed for Dock clicks
+        guard Prefs.previewsEnabled else { if panel?.isVisible == true { hide() }; return }
         if let from = suppressFrom {
             if hypot(p.x - from.x, p.y - from.y) < 4 { return }
             suppressFrom = nil

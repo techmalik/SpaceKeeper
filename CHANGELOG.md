@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0
+
+**New**
+- **Desktop switcher** (`⌃⌥⌘ Space`): every desktop with its apps and windows. Number keys or a click go there; `⇧`+number
+  brings the front window along, `⌥`+number sends all of that app's windows.
+- **Named desktops**: rename from the menu or Settings; names show in menus, the switcher and optionally the menu bar.
+- **Home desktops per app**: new windows of the app are carried to its home desktop; clicking it in the Dock from another
+  desktop goes there.
+- **Send all windows**: all of the front app's windows (`⇧⌃⌥⌘ 1–9`, `⇧⌃⌥⌘ ←/→`), or every window on this desktop (menu).
+- **Saved layouts**: save which desktop each window is on, restore later or automatically at launch; missing apps open first.
+- **Multiple displays**: send a window to any desktop on any display, or to the next display (`⌃⌥⌘ ↓`).
+- **Custom shortcuts**: Settings › Shortcuts lets you change or clear every shortcut and flags ones another app holds.
+- **Auto-hidden Dock** support for previews and Dock clicks.
+- **Update check**: Check for Updates… asks GitHub for the latest release; optional daily check (off unless you turn it on).
+
 ## 1.0.2
 
 **Fixes**

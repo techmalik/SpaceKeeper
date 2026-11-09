@@ -254,6 +254,90 @@ final class DebugControl {
                 let i = DockInspector.shared.item(at: CGPoint(x: x, y: y))
                 out = i.map { "dock item: \($0.app.localizedName ?? "?") frame=\($0.frame)" } ?? "no app item at point; dock list frame=\(DockInspector.shared.listFrame)"
             }
+        // --- 1.1 features
+        case "hotkeys":   // registered shortcuts and the ones macOS refused
+            for a in HotKeyAction.all { out += "\(a.id)=\(HotKeyBindings.shortcut(for: a)?.display ?? "-")\(HotKeys.shared.unavailable.contains(a.id) ? " UNAVAILABLE" : "")\n" }
+        case "perform":   // perform <actionID>: run a hotkey action without pressing keys
+            (NSApp.delegate as? AppDelegate)?.debugPerform(parts.dropFirst().first ?? "")
+            out = "performed"
+        case "desktops":  // what the switcher would show
+            for d in Spaces.displays() {
+                out += "display \(d.uuid) \(DisplayGeometry.name(forUUID: d.uuid)) bounds=\(DisplayGeometry.bounds(forUUID: d.uuid) ?? .zero)\n"
+                for t in SwitcherController.desktops(of: d) {
+                    out += "  \(t.id)\(t.isCurrent ? "*" : "") \(t.name ?? "-"): \(t.apps.map { "\($0.name)(\($0.titles.count))" }.joined(separator: ", "))\n"
+                }
+            }
+        case "switcher":  // switcher: toggle the overlay, report whether it is key
+            SwitcherController.shared.toggle()
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            out = "visible=\(SwitcherController.shared.isVisible) keyWindow=\(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "nil") active=\(NSApp.isActive)"
+        case "rename":    // rename <n> <name...> (current display; empty name clears)
+            if let d = Spaces.displays().first, parts.count >= 2, let n = Int(parts[1]) {
+                DesktopNames.set(parts.dropFirst(2).joined(separator: " "), display: d, desktop: n)
+                NotificationCenter.default.post(name: .desktopNamesChanged, object: nil)
+                out = "names=\(Prefs.desktopNames) label=\(DesktopNames.label(display: d, desktop: n))"
+            }
+        case "home":      // home <bundleID> <n|0>
+            if parts.count == 3, let n = Int(parts[2]) {
+                HomeDesktops.setHome(n == 0 ? nil : n, for: parts[1])
+                out = "homes=\(Prefs.homeDesktops)"
+            }
+        case "sendapp":   // sendapp <bundleID> <desktop>
+            if parts.count == 3, let n = Int(parts[2]),
+               let app = NSRunningApplication.runningApplications(withBundleIdentifier: parts[1]).first {
+                let wins = Windows.ofApp(app).filter { !$0.minimized && !$0.fullScreen && $0.isStandard }
+                let r = await WindowMover.shared.moveAll(wins, to: .desktop(n))
+                out = "moved \(r.moved) of \(wins.count) failures=\(r.failures.map(\.rawValue))"
+            }
+        case "layoutsave":    // layoutsave <name>
+            let l = Layouts.saveCurrent(named: parts.dropFirst().joined(separator: " "))
+            out = l.entries.map { "\($0.appName) \"\($0.title)\" -> \($0.desktop)" }.joined(separator: "\n")
+        case "layoutplan":    // layoutplan <name>: the moves a restore would make now
+            if let l = Layouts.all.first(where: { $0.name == parts.dropFirst().joined(separator: " ") }) {
+                let counts = Dictionary(uniqueKeysWithValues: Spaces.displays().map { ($0.uuid, $0.userSpaces.count) })
+                out = LayoutPlanner.plan(saved: l.entries, current: Layouts.placedWindows(), desktopCounts: counts)
+                    .map { "wid \($0.wid): \($0.fromDesktop) -> \($0.toDesktop)" }.joined(separator: "\n")
+                if out.isEmpty { out = "no moves" }
+            }
+        case "layoutrestore": // layoutrestore <name>
+            if let l = Layouts.all.first(where: { $0.name == parts.dropFirst().joined(separator: " ") }) {
+                var result = ""
+                Layouts.shared.restore(l) { m, f, c in result = "moved=\(m) failed=\(f) cancelled=\(c)" }
+                while Layouts.shared.restoring { try? await Task.sleep(nanoseconds: 200_000_000) }
+                out = result
+            }
+        case "layoutdelete":
+            Layouts.delete(named: parts.dropFirst().joined(separator: " "))
+            out = "layouts=\(Layouts.all.map(\.name))"
+        case "update":    // update: fetch the latest release without any UI
+            do { out = try await Updates.fetchLatest().map { "latest=\($0.version) newer=\(Updates.isNewer($0.version, than: AppInfo.version)) dmg=\($0.download?.absoluteString ?? "-")" } ?? "no release" }
+            catch { out = "error: \(error.localizedDescription)" }
+        case "dockstate":
+            let p = CGEvent(source: nil)?.location ?? .zero
+            out = "autohide=\(DockInspector.shared.autohide) listFrame=\(DockInspector.shared.listFrame) near=\(DockInspector.shared.isNearDock(p)) mouse=\(p)"
+        case "menu":      // build the status menu and dump it (title [shortcut] (disabled) ✓)
+            let m = NSMenu()
+            (NSApp.delegate as? AppDelegate)?.menuNeedsUpdate(m)
+            func dump(_ menu: NSMenu, _ indent: String) {
+                for i in menu.items {
+                    if i.isSeparatorItem { out += indent + "---\n"; continue }
+                    var line = indent + i.title
+                    if !i.keyEquivalent.isEmpty {
+                        let k = i.keyEquivalent.unicodeScalars.first.map { $0.value >= 0xF700 ? ["↑","↓","←","→"][min(Int($0.value) - 0xF700, 3)] : i.keyEquivalent.uppercased() } ?? ""
+                        line += " [\(i.keyEquivalentModifierMask.contains(.control) ? "⌃" : "")\(i.keyEquivalentModifierMask.contains(.option) ? "⌥" : "")\(i.keyEquivalentModifierMask.contains(.shift) ? "⇧" : "")\(i.keyEquivalentModifierMask.contains(.command) ? "⌘" : "")\(k)]"
+                    }
+                    if !i.isEnabled { line += " (disabled)" }
+                    if i.state == .on { line += " ✓" }
+                    out += line + "\n"
+                    if let sub = i.submenu { dump(sub, indent + "    ") }
+                }
+            }
+            dump(m, "")
+        case "settings":  // settings <0|1|2>
+            SettingsWindowController.shared.show(SettingsWindowController.Tab(rawValue: Int(parts.dropFirst().first ?? "0") ?? 0) ?? .shortcuts)
+            out = "window=\(NSApp.keyWindow?.windowNumber ?? 0)"
+        case "title":
+            out = "title=\"\((NSApp.delegate as? AppDelegate)?.debugTitle ?? "?")\""
         default:
             out = "unknown command: \(cmd)"
         }
