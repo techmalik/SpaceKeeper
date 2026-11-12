@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+**Fixes**
+- Dock hover previews stopped appearing after the Mac had been running a while (e.g. across sleep): macOS could pin
+  the preview card to one desktop, so it opened on a desktop you weren't looking at. The card is now rebuilt when that
+  happens.
+
 ## 1.1.0
 
 **New**

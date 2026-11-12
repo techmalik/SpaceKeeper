@@ -250,9 +250,19 @@ final class DockPreviewController {
         model.items = wins.map {
             PreviewItem(id: $0.id, title: $0.title.isEmpty ? name : $0.title, minimized: $0.minimized, image: Thumbnails.shared.cached($0.id))
         }
-        let panel = ensurePanel()
+        var panel = ensurePanel()
         position(panel, for: item)
         panel.orderFrontRegardless()
+        if !panel.isOnActiveSpace {
+            // The window server sometimes drops a long-lived panel's "all Spaces" tag (seen after sleep/wake) and keeps
+            // it on one desktop, while AppKit still reports it visible: the card then opens on a desktop you can't see.
+            dbg("preview panel stranded on Spaces \(Spaces.spaces(of: CGWindowID(panel.windowNumber))) - rebuilding it")
+            panel.orderOut(nil)
+            self.panel = nil
+            panel = ensurePanel()
+            position(panel, for: item)
+            panel.orderFrontRegardless()
+        }
         guard !wins.isEmpty else { return }
 
         captureTask = Task { @MainActor in
