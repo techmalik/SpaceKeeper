@@ -6,6 +6,9 @@
 - Dock hover previews stopped appearing after the Mac had been running a while (e.g. across sleep): macOS could pin
   the preview card to one desktop, so it opened on a desktop you weren't looking at. The card is now rebuilt when that
   happens.
+- Restoring a minimized window from the Dock now takes one click. SpaceKeeper used to activate the app while the
+  window was still minimized, which macOS ignores, so the window came back behind the current app; it now waits until
+  the window is on screen, then brings it forward (and tries again if it didn't take).
 
 ## 1.1.0
 
