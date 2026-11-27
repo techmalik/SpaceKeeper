@@ -13,7 +13,23 @@ enum Prefs {
             "homeDesktopsEnabled": true,
             "showDesktopName": false,
             "autoCheckUpdates": false,
+            "dockDotsHere": false,
         ])
+    }
+
+    /// Show Dock dots only under apps with a window on the current desktop (SpaceKeeper draws them).
+    static var dockDotsHere: Bool { get { d.bool(forKey: "dockDotsHere") } set { d.set(newValue, forKey: "dockDotsHere") } }
+
+    // macOS Dock: "Show indicators for open applications"
+    static var nativeDockDots: Bool {
+        CFPreferencesAppSynchronize("com.apple.dock" as CFString)
+        return (CFPreferencesCopyAppValue("show-process-indicators" as CFString, "com.apple.dock" as CFString) as? Bool) ?? true
+    }
+
+    static func setNativeDockDots(_ on: Bool) {
+        guard nativeDockDots != on else { return }
+        run("/usr/bin/defaults", ["write", "com.apple.dock", "show-process-indicators", "-bool", on ? "true" : "false"])
+        run("/usr/bin/killall", ["Dock"])
     }
 
     static var previewsEnabled: Bool { get { d.bool(forKey: "previewsEnabled") } set { d.set(newValue, forKey: "previewsEnabled") } }

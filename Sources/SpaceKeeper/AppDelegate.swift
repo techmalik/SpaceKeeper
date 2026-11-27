@@ -81,13 +81,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if alert.runModal() == .alertFirstButtonReturn { Prefs.setSystemSwitchOnActivate(false) }
     }
 
+    /// Give the Dock its own dots back whenever SpaceKeeper isn't there to draw them.
+    func applicationWillTerminate(_ notification: Notification) {
+        if Prefs.dockDotsHere { Prefs.setNativeDockDots(true) }
+    }
+
     private func startServicesIfPermitted() {
         Updates.checkIfDue()
-        guard AXIsProcessTrusted() else { preview.stop(); clicker.stop(); HomeDesktops.shared.stop(); return }
+        guard AXIsProcessTrusted() else {
+            preview.stop(); clicker.stop(); HomeDesktops.shared.stop(); DockDots.shared.stop()
+            if Prefs.dockDotsHere { Prefs.setNativeDockDots(true) }      // can't draw ours without Accessibility
+            return
+        }
         preview.start()
         clicker.onHandled = { [weak self] in self?.preview.dismiss() }
         clicker.start()
         HomeDesktops.shared.start()
+        if Prefs.dockDotsHere {
+            if Prefs.nativeDockDots { Prefs.setNativeDockDots(false) }
+            DockDots.shared.start()
+        } else {
+            DockDots.shared.stop()
+        }
         restoreAtLaunchIfAsked()
     }
 
@@ -256,6 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(toggle("Dock hover previews (this desktop only)", Prefs.previewsEnabled, #selector(togglePreviews)))
+        menu.addItem(toggle("Dock dots only for apps on this desktop", Prefs.dockDotsHere, #selector(toggleDockDots)))
         menu.addItem(toggle("Click Dock icon to minimize", Prefs.clickToMinimize, #selector(toggleMinimize)))
         menu.addItem(toggle("New window here if app has none on this desktop", Prefs.openNewWindowHere, #selector(toggleNewWindow)))
         menu.addItem(toggle("Follow window to its new desktop", Prefs.followWindow, #selector(toggleFollow)))
@@ -521,6 +537,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showShortcuts() { SettingsWindowController.shared.show(.shortcuts) }
     @objc private func showHomes() { SettingsWindowController.shared.show(.home) }
     @objc private func togglePreviews() { Prefs.previewsEnabled.toggle(); if !Prefs.previewsEnabled { preview.hide() } }
+    @objc private func toggleDockDots() {
+        Prefs.dockDotsHere.toggle()
+        // The Dock restarts for a second either way (that's how macOS applies its indicator setting).
+        Prefs.setNativeDockDots(!Prefs.dockDotsHere)
+        startServicesIfPermitted()
+    }
     @objc private func toggleMinimize() { Prefs.clickToMinimize.toggle() }
     @objc private func toggleNewWindow() { Prefs.openNewWindowHere.toggle() }
     @objc private func toggleFollow() { Prefs.followWindow.toggle() }
