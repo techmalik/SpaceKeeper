@@ -158,6 +158,14 @@ final class DebugControl {
                 }
                 out = "closed \(n)"
             }
+        case "dots":      // dots [on|off]: per-desktop Dock dots state, optionally switching the feature
+            if let arg = parts.dropFirst().first, (arg == "on") != Prefs.dockDotsHere {
+                Prefs.dockDotsHere = arg == "on"
+                Prefs.setNativeDockDots(!Prefs.dockDotsHere)
+                if Prefs.dockDotsHere { DockDots.shared.start() } else { DockDots.shared.stop() }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+            }
+            out = DockDots.shared.debugDescription
         case "flags":
             out = "hid=\(String(CGEventSource.flagsState(.hidSystemState).rawValue, radix: 16)) combined=\(String(CGEventSource.flagsState(.combinedSessionState).rawValue, radix: 16)) session=\(String(CGEventSource.flagsState(.combinedSessionState).rawValue, radix: 16))"
         case "unmin":     // unmin <bundleID>: un-minimize all standard windows of the app on this desktop

@@ -180,7 +180,13 @@ final class DockClickMinimizer {
             ws.forEach(Windows.minimize)
         case .restore(let app, let ws):
             ws.forEach { AX.set($0.ax, kAXMinimizedAttribute, kCFBooleanFalse) }
-            Windows.bringForward(app, ws)
+            // Activating while the window is still minimized (or mid-animation) is silently ignored by macOS: the
+            // window comes back but stays behind the current app, so it looks like it "went back". Wait until it
+            // is really on screen, then bring it forward, and check once more that it took.
+            waitUntilOnScreen(ws, tries: 30, request: request, spaces: spaces) {
+                Windows.bringForward(app, ws)
+                self.confirmFront(app, ws, retries: 2, request: request, spaces: spaces)
+            }
         case .raise(let app, let ws):
             Windows.bringForward(app, ws)
         case .goHome(let app, let desktop, let display):
@@ -216,6 +222,29 @@ final class DockClickMinimizer {
         if !wins.isEmpty { done(wins); return }
         guard tries > 0 else { done(nil); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { self.waitForWindow(of: app, tries: tries - 1, request: request, spaces: spaces, done) }
+    }
+
+    /// Calls `done` once any of the restored windows is drawn on screen (or after ~1.5 s, whichever comes first).
+    private func waitUntilOnScreen(_ ws: [Win], tries: Int, request: UUID, spaces: Set<Int>, _ done: @escaping () -> Void) {
+        guard requestID == request, tap != nil, Spaces.currentIDs() == spaces else { return }
+        if tries <= 0 || ws.contains(where: { Windows.isOnScreen($0.id) && AX.bool($0.ax, kAXMinimizedAttribute) != true }) {
+            done(); return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            self.waitUntilOnScreen(ws, tries: tries - 1, request: request, spaces: spaces, done)
+        }
+    }
+
+    /// If the app still isn't frontmost a moment after we brought it forward, try again.
+    private func confirmFront(_ app: NSRunningApplication, _ ws: [Win], retries: Int, request: UUID, spaces: Set<Int>) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            guard self.isCurrent(request, spaces: spaces, app: app) else { return }
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return }
+            guard retries > 0 else { dbg("\(app.localizedName ?? "?"): restored but could not bring it to the front"); return }
+            dbg("\(app.localizedName ?? "?"): not frontmost after restore -> bringing forward again")
+            Windows.bringForward(app, ws)
+            self.confirmFront(app, ws, retries: retries - 1, request: request, spaces: spaces)
+        }
     }
 
     // MARK: Synthetic events (tagged so the tap ignores them)

@@ -120,6 +120,13 @@ enum Windows {
         return false
     }
 
+    /// True if the window server is currently drawing this window (i.e. it is no longer minimized or animating in).
+    static func isOnScreen(_ wid: CGWindowID) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], wid) as? [[String: Any]],
+              let w = list.first else { return false }
+        return (w[kCGWindowIsOnscreen as String] as? Bool) ?? false
+    }
+
     /// True if the app has a real-looking window on a desktop that isn't currently visible.
     static func hasWindowsElsewhere(_ app: NSRunningApplication) -> Bool {
         let current = Spaces.currentIDs()
